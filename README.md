@@ -182,6 +182,14 @@ Use any TMDb-supported language code (ISO 639-1, optionally with a region, e.g. 
 
 ---
 
+## Disclaimer
+
+This script is provided as-is, with no warranty. Always test with `-t` before renaming for real, and keep backups of anything irreplaceable. The author is not responsible for any lost, corrupted, or misplaced files resulting from the use of this script.
+
+Renaming a file changes its modification time, which Plex uses to decide when to re-analyze a video for things like intro/credit markers. After renaming a large batch of files, Plex may re-scan and re-analyze them, which can spike your Plex server's CPU usage for a while. This is normal and temporary; performance should return to normal once Plex finishes catching up, and is usually tolerable even for large libraries.
+
+---
+
 ## Troubleshooting
 
 **`'python' is not recognized as an internal or external command`** (Windows)
