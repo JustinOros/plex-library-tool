@@ -1,0 +1,76 @@
+# names.yaml
+#
+# Customize the naming convention used when renaming folders and files.
+# Uses Python's str.format() syntax: {token} for a plain value, or
+# {token:02d} to zero-pad a number to 2 digits, {token:03d} for 3, etc.
+#
+# Any line you don't include (or leave commented out) falls back to the
+# default shown below, so you only need to uncomment the ones you want
+# to change.
+#
+# Available tokens per line:
+#   movie_folder          {title} {year} {resolution}
+#   movie_folder_no_year   {title} {resolution}         (used when no year is found)
+#   show_folder            {title} {year} {resolution}
+#   show_folder_no_year     {title} {resolution}         (used when no year is found)
+#   movie_file              {title} {ext} {resolution}
+#   episode_file            {title} {season} {episode} {ext} {resolution}
+#   season_folder           {season}
+#   subtitle_file           {stem} {ext} {lang}   (stem = matching video's name, no extension; lang = TMDB_LANGUAGE's code, e.g. "en", "es", "fr")
+#   subtitle_folder         (no tokens -- just the folder name, e.g. "Subs", "Subtitles", or a word in your own language)
+#
+# The subtitle identified as matching TMDB_LANGUAGE (set in .env, see the
+# README) is treated as the primary one and renamed to match the video,
+# e.g. "Movie.es.srt" if TMDB_LANGUAGE is Spanish. If none of the subtitle
+# files can be matched to that language, an untagged one is used as a
+# best guess. Everything else keeps its original filename and is just
+# moved into the subtitle folder.
+#
+# {resolution} is opt-in -- it's detected from the original folder/file name
+# (720p, 1080p, 2160p, 4K, etc.) but NONE of the default templates above
+# reference it, so nothing changes unless you add {resolution} to a
+# template yourself, e.g. movie_folder: "{title} ({year}) [{resolution}]".
+# If no resolution is found, it renders as an empty string, and an empty
+# bracket/paren pair left behind by that (like "[]" or "()") is
+# automatically cleaned up.
+#
+# word_separator controls what replaces spaces INSIDE the {title} value
+# itself (the title comes back from TMDb as "Movie Name", space-separated).
+# Leave it as a single space for "Movie Name", or set it to "." for
+# "Movie.Name", "_" for "Movie_Name", etc. This only affects {title} --
+# combine it with the templates below to fully control the look, e.g.
+# word_separator: "." together with movie_folder: "{title}.{year}" gives
+# you "Movie.Name.2020" instead of "Movie Name (2020)".
+#
+# name_case forces the case of every rendered folder/file name (the whole
+# name, not just the title). Leave blank for the title case TMDb returns,
+# or set to "lower" for "movie name (2020)" / "movie.name.2020.mkv", or
+# "upper" for "MOVIE NAME (2020)" / "MOVIE.NAME.2020.MKV".
+#
+# Filesystem-illegal characters (< > : " / \ | ? *) are stripped from the
+# result automatically, so it's safe to use punctuation like colons if you
+# want -- it just won't survive into the final name.
+#
+# Examples:
+#   episode_file: "{title} - {season}x{episode:02d}.{ext}"   -> "Show - 1x05.mkv"
+#   season_folder: "Season {season:02d}"                      -> "Season 01"
+#   movie_folder: "{title} [{year}]"                          -> "Movie [2020]"
+#   word_separator: "."                                       -> "Movie.Name" instead of "Movie Name"
+#   name_case: "lower"                                        -> "movie name (2020)"
+#   movie_folder: "{title} ({year}) [{resolution}]"           -> "Movie (2020) [1080p]"
+#   subtitle_folder: "Subtitles"                               -> subs get consolidated into a "Subtitles" folder instead of "Subs"
+#   subtitle_folder: "Untertitel"                              -> or any word in your own language
+#
+# Uncomment and edit any of the lines below to enable:
+#
+# movie_folder: "{title} ({year})"
+# movie_folder_no_year: "{title}"
+# show_folder: "{title} ({year})"
+# show_folder_no_year: "{title}"
+# movie_file: "{title}.{ext}"
+# episode_file: "{title} S{season:02d}E{episode:02d}.{ext}"
+# season_folder: "S{season:02d}"
+# subtitle_file: "{stem}.{lang}.{ext}"
+# subtitle_folder: "Subs"
+# word_separator: " "
+# name_case: ""

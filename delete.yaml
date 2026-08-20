@@ -1,0 +1,155 @@
+# delete.yaml
+#
+# Configures what cleanup (-c) moves to a local trash folder. Nothing here
+# is deleted permanently -- matched items are moved to a .trash folder next
+# to the script, and every move can be undone. All three sections below are
+# optional and independent; enable only the ones you want.
+#
+# ============================================================================
+# folders
+# ============================================================================
+#
+# Folder names to move to trash during cleanup.
+#
+# - Matching is case-insensitive.
+# - Matches the folder's full name -- e.g. "Screens" matches a folder named
+#   "Screens" or "screens", but not "My Screens" or "Screenshots".
+# - Wildcards are supported: "*" matches any run of characters and "?"
+#   matches a single character, so you can match partial or variable names.
+#   For example "* Potato" matches "123 Potato" or "Mr Potato", and
+#   "Potato*" matches "Potato Salad" or "Potatoes". A pattern with no
+#   wildcard still has to match the whole folder name exactly.
+# - Any folder anywhere in the scanned share with a matching name will be
+#   moved to trash, along with everything inside it. There is no
+#   confirmation beyond the normal cleanup run prompts, so double check
+#   this list before running for real.
+#
+# Uncomment and edit the list below to enable:
+#
+# folders:
+#   - Screens
+#   - Featurettes
+#   - Extras
+#   - Sample
+#   - Samples
+#   - Behind the Scenes
+#   - Deleted Scenes
+#   - Trailers
+#   - Interviews
+#   - Bonus
+#
+# ============================================================================
+# files
+# ============================================================================
+#
+# Files to move to trash during cleanup.
+#
+# - Matching is case-insensitive.
+# - Entries can be:
+#     - a full filename, e.g. "potato.txt" matches only a file named
+#       exactly "potato.txt" (or "Potato.TXT", etc.)
+#     - an extension pattern, e.g. "*.txt" matches any file ending in .txt
+#     - a wildcard pattern, e.g. "* potato.txt" matches "123 potato.txt" or
+#       "Mr potato.txt"; "?otato.txt" matches "potato.txt" or "Xotato.txt"
+#       ("*" matches any run of characters, "?" matches a single character)
+#     - an exclusion pattern, prefixed with "!", e.g. "!*.en.*" protects any
+#       file matching that pattern from deletion, even if another entry
+#       above would otherwise match it. A file is only deleted if it
+#       matches at least one non-"!" entry and matches none of the "!"
+#       entries.
+#     - the special exclusion "!language:en" protects English subtitle
+#       files (.srt, .sub, .idx) from deletion specifically, even when the
+#       filename has no language tag at all. It's hardcoded to English --
+#       the "subtitles:" section below is the friendlier, language-agnostic
+#       way to protect or target any language, including your own.
+# - Video file extensions (mp4, mkv, avi, etc.) are never deleted by
+#   cleanup, even if a pattern here would otherwise match them.
+#
+# Uncomment and edit the list below to enable:
+#
+# files:
+#   - "*.txt"
+#   - "*.nfo"
+#   - "*.jpg"
+#   - "*.jpeg"
+#   - "*.png"
+#   - "*.ico"
+#   - "*.url"
+#   - "*.sfv"
+#
+# ============================================================================
+# subtitles
+# ============================================================================
+#
+# A separate, language-aware way to manage .srt/.sub/.idx files without
+# needing to list those extensions under "files:" above -- this section
+# handles them on its own.
+#
+# - Entries are language names (or common codes), matched case-insensitively:
+#   "English", "en", "eng" all mean the same thing. Covers ~80 languages
+#   (see the script's LANGUAGE_CANONICAL table for the full list).
+# - Prefix an entry with "!" to KEEP that language and delete every other
+#   identified language. Use this if you only want one (or a few)
+#   languages kept -- replace "Spanish" below with whichever language you
+#   actually want to keep:
+#
+#     subtitles:
+#       - "!Spanish"
+#
+#   This deletes any subtitle file identified as a language other than
+#   Spanish, and leaves Spanish, and anything the tool can't confidently
+#   identify a language for, untouched.
+#
+# - An entry WITHOUT "!" means "delete just this language, leave every
+#   other language (including unidentified files) alone." Use this to
+#   strip out one unwanted language without being aggressive about
+#   everything else:
+#
+#     subtitles:
+#       - "English"
+#
+#   This deletes only English-identified subtitle files. Everything else,
+#   including unidentified files, is left as-is.
+#
+# - Language is identified from the filename first (e.g. "Movie.es.srt",
+#   "Movie.Spanish.srt"). If the filename has no language tag at all
+#   (e.g. a bare "Movie.srt"), the file's own content is read as a
+#   fallback: .idx files have a real "id: xx" language field, and .srt
+#   files are analyzed by script (Cyrillic, CJK, Arabic, etc.) and common
+#   word frequency for Latin-script languages. This is a best-effort
+#   heuristic for .srt content, not a guarantee, and always errs toward
+#   leaving a file alone if the result is unclear.
+#
+# Uncomment and edit to enable (replace "Spanish" with your own primary
+# language, or whichever language you want to keep):
+#
+# subtitles:
+#   - "!Spanish"
+
+ folders:
+   - Screens
+   - Featurettes
+   - Extras
+   - Sample
+   - Samples
+   - Behind the Scenes
+   - Deleted Scenes
+   - Trailers
+   - Interviews
+   - Bonus
+   - "* torrent"
+   - "* torrents"
+
+files:
+   - "*.txt"
+   - "*.nfo"
+   - "*.jpg"
+   - "*.jpeg"
+   - "*.png"
+   - "*.ico"
+   - "*.url"
+   - "*.sfv"
+   - "*.part"
+
+subtitles:
+  - "!English"
