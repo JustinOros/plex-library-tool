@@ -616,8 +616,40 @@ def get_absolute_episode_map(api_key, tv_id):
                     mapping = built
                     vprint(f"  Loaded absolute episode order for tv_id={tv_id}: {len(built)} episode(s)")
 
+    if not mapping:
+        mapping = build_absolute_map_from_season_counts(api_key, tv_id)
+
     _ABSOLUTE_EPISODE_CACHE[tv_id] = mapping
     return mapping
+
+
+def build_absolute_map_from_season_counts(api_key, tv_id):
+    details, err = tmdb_tv_details(api_key, tv_id)
+    if err:
+        vprint(f"  Could not fetch tv details for tv_id={tv_id}: {err}")
+        return None
+
+    seasons = [
+        s for s in details.get("seasons", [])
+        if s.get("season_number", 0) > 0 and s.get("episode_count")
+    ]
+    seasons.sort(key=lambda s: s.get("season_number"))
+
+    if not seasons:
+        return None
+
+    built = {}
+    absolute_number = 0
+    for s in seasons:
+        season_number = s.get("season_number")
+        for episode_number in range(1, s.get("episode_count") + 1):
+            absolute_number += 1
+            built[absolute_number] = (season_number, episode_number)
+
+    if built:
+        vprint(f"  Built absolute episode order for tv_id={tv_id} from season episode counts: {len(built)} episode(s)")
+        return built
+    return None
 
 
 def resolve_absolute_episode(api_key, tmdb_id, name):
@@ -2351,9 +2383,14 @@ def run_scan(args, log):
     test_mode = args.test is not None
     test_limit = args.test or 0
 
-    subfolders = sorted(
-        p for p in Path(share).iterdir() if p.is_dir() and not p.name.startswith(".")
-    )
+    share_path = Path(share)
+    if media_type == "tv" and looks_like_single_show_folder(share_path):
+        vprint(f"  {share_path.name} looks like a single show's folder, processing it directly")
+        subfolders = [share_path]
+    else:
+        subfolders = sorted(
+            p for p in share_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+        )
     loose_files = list_loose_video_files(share) if media_type == "movie" else []
 
     unchanged_count = 0
@@ -2573,6 +2610,8 @@ SPECIALS_FOLDER_PATTERN = re.compile(r'^specials?$', re.IGNORECASE)
 
 
 def looks_like_single_show_folder(folder):
+    if list_video_files(folder):
+        return True
     subfolders = list_subfolders(folder)
     if not subfolders:
         return False
