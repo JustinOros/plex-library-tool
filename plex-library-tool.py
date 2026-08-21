@@ -155,6 +155,24 @@ def parse_episode_only(filename):
     return None
 
 
+TRAILING_TAG_PATTERN = re.compile(r'[\[\(][^\[\]\(\)]*[\]\)]\s*$')
+TRAILING_NUMBER_PATTERN = re.compile(r'(?<![A-Za-z0-9])0*(\d{1,3})\s*$')
+
+
+def parse_trailing_episode_number(filename):
+    stem = Path(filename).stem
+    stripped = stem
+    for _ in range(3):
+        new_stripped = TRAILING_TAG_PATTERN.sub('', stripped).rstrip()
+        if new_stripped == stripped:
+            break
+        stripped = new_stripped
+    m = TRAILING_NUMBER_PATTERN.search(stripped)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def parse_season_folder_name(name):
     stripped = name.strip()
     m = SEASON_FOLDER_CANONICAL_PATTERN.match(stripped)
@@ -514,6 +532,106 @@ def tmdb_tv_season(api_key, tv_id, season_number):
         return None, str(e)
 
     return data, None
+
+
+def tmdb_tv_episode_groups(api_key, tv_id):
+    v4 = is_v4_token(api_key)
+
+    params = {}
+    if not v4:
+        params["api_key"] = api_key
+
+    url = f"{TMDB_BASE}/tv/{tv_id}/episode_groups"
+    if params:
+        url += f"?{urllib.parse.urlencode(params)}"
+    headers = {"Authorization": f"Bearer {api_key}"} if v4 else {}
+    req = urllib.request.Request(url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        return None, str(e)
+
+    return data, None
+
+
+def tmdb_episode_group_details(api_key, group_id):
+    v4 = is_v4_token(api_key)
+
+    params = {}
+    if not v4:
+        params["api_key"] = api_key
+
+    url = f"{TMDB_BASE}/tv/episode_group/{group_id}"
+    if params:
+        url += f"?{urllib.parse.urlencode(params)}"
+    headers = {"Authorization": f"Bearer {api_key}"} if v4 else {}
+    req = urllib.request.Request(url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        return None, str(e)
+
+    return data, None
+
+
+ABSOLUTE_EPISODE_GROUP_TYPE = 2
+_ABSOLUTE_EPISODE_CACHE = {}
+
+
+def get_absolute_episode_map(api_key, tv_id):
+    if tv_id in _ABSOLUTE_EPISODE_CACHE:
+        return _ABSOLUTE_EPISODE_CACHE[tv_id]
+
+    mapping = None
+    groups, err = tmdb_tv_episode_groups(api_key, tv_id)
+    if err:
+        vprint(f"  Could not fetch episode groups for tv_id={tv_id}: {err}")
+    else:
+        candidates = [
+            g for g in groups.get("results", [])
+            if g.get("type") == ABSOLUTE_EPISODE_GROUP_TYPE
+        ]
+        candidates.sort(key=lambda g: g.get("episode_count", 0), reverse=True)
+
+        if candidates:
+            group_id = candidates[0].get("id")
+            details, err = tmdb_episode_group_details(api_key, group_id)
+            if err:
+                vprint(f"  Could not fetch absolute episode group details (id={group_id}): {err}")
+            else:
+                built = {}
+                absolute_number = 0
+                for group in details.get("groups", []):
+                    for ep in group.get("episodes", []):
+                        absolute_number += 1
+                        season_number = ep.get("season_number")
+                        episode_number = ep.get("episode_number")
+                        if season_number is not None and episode_number is not None:
+                            built[absolute_number] = (season_number, episode_number)
+                if built:
+                    mapping = built
+                    vprint(f"  Loaded absolute episode order for tv_id={tv_id}: {len(built)} episode(s)")
+
+    _ABSOLUTE_EPISODE_CACHE[tv_id] = mapping
+    return mapping
+
+
+def resolve_absolute_episode(api_key, tmdb_id, name):
+    if tmdb_id is None:
+        return None
+    absolute_number = parse_episode_only(name)
+    if absolute_number is None:
+        absolute_number = parse_trailing_episode_number(name)
+    if absolute_number is None:
+        return None
+    mapping = get_absolute_episode_map(api_key, tmdb_id)
+    if not mapping:
+        return None
+    return mapping.get(absolute_number)
 
 
 def result_title(media_type, result):
@@ -1527,7 +1645,7 @@ def preview_merge_duplicate_show_folder(source_folder, target_folder, raw_name, 
         preview_consolidated_subtitles(subtitles, dest)
 
 
-def preview_video_files(folder, media_type, final_name, api_key):
+def preview_video_files(folder, media_type, final_name, api_key, tmdb_id=None):
     files = list_video_files(folder)
 
     if media_type == "movie":
@@ -1566,7 +1684,15 @@ def preview_video_files(folder, media_type, final_name, api_key):
 
         season = parse_season_only(item.name)
         if season is None:
-            print(f"No season/episode found, skipping: {item.name}")
+            resolved = resolve_absolute_episode(api_key, tmdb_id, item.name)
+            if resolved is None:
+                print(f"No season/episode found, skipping: {item.name}")
+                continue
+            season, episode = resolved
+            new_name = episode_file_name(final_name, season, episode, ext, detect_resolution(item.name))
+            target_season_folder = season_folder_name(season)
+            print(f"Move: {item.name} -> {target_season_folder}/{new_name}")
+            preview_consolidated_subtitles(subtitles, folder / target_season_folder / new_name)
             continue
 
         target_season_folder = season_folder_name(season)
@@ -1574,7 +1700,7 @@ def preview_video_files(folder, media_type, final_name, api_key):
         preview_consolidated_subtitles(subtitles, folder / target_season_folder / item.name)
 
 
-def rename_video_files(folder, media_type, final_name, log, api_key):
+def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=None):
     renamed = 0
     skipped = 0
 
@@ -1621,10 +1747,15 @@ def rename_video_files(folder, media_type, final_name, log, api_key):
         else:
             season = parse_season_only(item.name)
             if season is None:
-                print(f"No season/episode found, skipping: {item.name}")
-                skipped += 1
-                continue
-            new_name = item.name
+                resolved = resolve_absolute_episode(api_key, tmdb_id, item.name)
+                if resolved is None:
+                    print(f"No season/episode found, skipping: {item.name}")
+                    skipped += 1
+                    continue
+                season, episode = resolved
+                new_name = episode_file_name(final_name, season, episode, ext, detect_resolution(item.name))
+            else:
+                new_name = item.name
 
         target_season_folder = season_folder_name(season)
         season_dir = folder / target_season_folder
@@ -2265,7 +2396,7 @@ def run_scan(args, log):
         if extract_year(raw_name) is None:
             hint_year = infer_year_from_files(folder)
             vprint(f"  No year in folder name, inferred from files: {hint_year}")
-        final_name, match_year, _, error = lookup_folder(api_key, media_type, raw_name, hint_year)
+        final_name, match_year, match_id, error = lookup_folder(api_key, media_type, raw_name, hint_year)
 
         if error:
             print(error)
@@ -2296,7 +2427,7 @@ def run_scan(args, log):
                 simulated_tv_folder_names.add(folder_name)
                 preview_season_folders(folder)
                 preview_season_folder_files(folder, final_name)
-            preview_video_files(folder, media_type, final_name, api_key)
+            preview_video_files(folder, media_type, final_name, api_key, match_id)
             examples_shown += 1
             continue
 
@@ -2340,7 +2471,7 @@ def run_scan(args, log):
             files_renamed += sub_renamed
             files_skipped += sub_skipped
 
-        renamed, skipped = rename_video_files(folder, media_type, final_name, log, api_key)
+        renamed, skipped = rename_video_files(folder, media_type, final_name, log, api_key, match_id)
         files_renamed += renamed
         files_skipped += skipped
 
@@ -2438,6 +2569,20 @@ def check_show_episodes(api_key, show_folder):
     return missing, None
 
 
+SPECIALS_FOLDER_PATTERN = re.compile(r'^specials?$', re.IGNORECASE)
+
+
+def looks_like_single_show_folder(folder):
+    subfolders = list_subfolders(folder)
+    if not subfolders:
+        return False
+    season_like = sum(
+        1 for s in subfolders
+        if parse_season_folder_name(s.name) is not None or SPECIALS_FOLDER_PATTERN.match(s.name)
+    )
+    return season_like > len(subfolders) / 2
+
+
 def run_episode_check(args):
     path_arg = args.episodes if isinstance(args.episodes, str) else None
     share = resolve_share(path_arg)
@@ -2453,9 +2598,15 @@ def run_episode_check(args):
     api_key = get_api_key()
     get_tmdb_language()
 
-    shows = sorted(
-        p for p in Path(share).iterdir() if p.is_dir() and not p.name.startswith(".")
-    )
+    share_path = Path(share)
+
+    if looks_like_single_show_folder(share_path):
+        vprint(f"  {share_path.name} looks like a single show's folder (season subfolders found), checking it directly")
+        shows = [share_path]
+    else:
+        shows = sorted(
+            p for p in share_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+        )
 
     checked = 0
     incomplete = 0
