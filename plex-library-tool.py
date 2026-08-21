@@ -777,6 +777,19 @@ TRAILING_BRACKET_TAG_PATTERN = re.compile(r'\[[^\[\]]*\]\s*$')
 BARE_YEAR_PATTERN = re.compile(r'(19|20)\d{2}$')
 
 
+def strip_trailing_bracket_tags(name):
+    stripped = name
+    while True:
+        match = TRAILING_BRACKET_TAG_PATTERN.search(stripped)
+        if not match:
+            break
+        candidate = stripped[:match.start()].rstrip()
+        if not candidate:
+            break
+        stripped = candidate
+    return stripped
+
+
 def strip_junk_trailing_paren(raw_name):
     working = raw_name
     bracket_match = TRAILING_BRACKET_TAG_PATTERN.search(working)
@@ -822,6 +835,8 @@ def build_query(raw_name, year):
     match = RELEASE_GROUP_SUFFIX_PATTERN.search(raw_name)
     if match:
         raw_name = raw_name[:match.start()] + match.group(1)
+
+    raw_name = strip_trailing_bracket_tags(raw_name)
 
     cleaned = clean_and_squeeze(raw_name)
     if year:
