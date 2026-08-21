@@ -14,6 +14,7 @@ This guide assumes you've never used Python or GitHub before. If you already kno
 - Renames video files to match, and organizes TV episodes into `S01`, `S02`, etc. season folders
 - Detects loose movie files sitting directly in the share root (no folder of their own) and organizes them into a proper movie folder
 - Detects a duplicate show folder for a show you already have (e.g. a separately-downloaded "Show S02" folder) and merges its episodes into the existing show folder instead of creating a second one
+- Checks your organized TV shows against TMDb's episode list and reports any already-aired episodes you're missing (`-e`), without changing anything
 - Finds subtitle files, figures out which one matches your primary language (by filename, and by reading the file's content/metadata if the filename doesn't say), and renames it to match the video. Defaults to English, but follows whatever language you've set for TMDb results (see [Non-English users](#non-english-users)).
 - Optionally cleans up junk files/folders (samples, `.nfo`, `.txt`, screenshots, unwanted-language subtitles) into a local trash folder. Nothing is deleted permanently, and every cleanup can be reversed.
 - Fully customizable naming convention (`names.yaml`): change `S01` to `Season 01`, use dots instead of spaces, uppercase everything, rename the "Subs" folder to something else, etc.
@@ -140,6 +141,7 @@ python plex-library-tool.py -r "/path/to/your/Movies" -t
 |---|---|
 | `-r`, `--rename [PATH]` | Scan and rename a share. Pass a path to skip the share-selection prompt. |
 | `-c`, `--cleanup [PATH]` | Move junk files/folders (per `delete.yaml`) to a local trash folder. |
+| `-e`, `--episodes [PATH]` | Check TV shows against TMDb's episode list and report any missing (already-aired) episodes. Read-only, makes no changes. |
 | `-t`, `--test [N]` | Preview only. No changes are made. Optionally limit how many folders are shown. |
 | `-y`, `--yes` | Don't ask for confirmation before each rename. |
 | `-f`, `--force` | Force a full scan even if nothing looks like it changed since the last run. |

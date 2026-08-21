@@ -476,6 +476,46 @@ def tmdb_alternative_titles(api_key, media_type, tmdb_id):
     return [e.get("title") or e.get("name") for e in entries if e.get("title") or e.get("name")]
 
 
+def tmdb_tv_details(api_key, tv_id):
+    v4 = is_v4_token(api_key)
+
+    params = {"language": get_tmdb_language()}
+    if not v4:
+        params["api_key"] = api_key
+
+    url = f"{TMDB_BASE}/tv/{tv_id}?{urllib.parse.urlencode(params)}"
+    headers = {"Authorization": f"Bearer {api_key}"} if v4 else {}
+    req = urllib.request.Request(url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        return None, str(e)
+
+    return data, None
+
+
+def tmdb_tv_season(api_key, tv_id, season_number):
+    v4 = is_v4_token(api_key)
+
+    params = {"language": get_tmdb_language()}
+    if not v4:
+        params["api_key"] = api_key
+
+    url = f"{TMDB_BASE}/tv/{tv_id}/season/{season_number}?{urllib.parse.urlencode(params)}"
+    headers = {"Authorization": f"Bearer {api_key}"} if v4 else {}
+    req = urllib.request.Request(url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as e:
+        return None, str(e)
+
+    return data, None
+
+
 def result_title(media_type, result):
     return result.get("title") if media_type == "movie" else result.get("name")
 
@@ -813,12 +853,12 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
 
     results, err = tmdb_search(api_key, media_type, query)
     if err:
-        return None, None, f"Lookup failed: {raw_name} ({err})"
+        return None, None, None, f"Lookup failed: {raw_name} ({err})"
     vprint(f"  TMDb returned {len(results)} result(s)")
 
     match = best_match(media_type, results, year, query)
     if not match:
-        return None, None, f"No match found (Ignoring): {raw_name}"
+        return None, None, None, f"No match found (Ignoring): {raw_name}"
 
     query_norm = clean_and_squeeze(query).lower()
     title = result_title(media_type, match)
@@ -837,9 +877,10 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
                 break
 
     match_year = result_year(media_type, match)
+    match_id = match.get("id")
     vprint(f"  Resolved: {final_name!r} ({match_year})")
 
-    return final_name, match_year, None
+    return final_name, match_year, match_id, None
 
 
 def list_video_files(folder):
@@ -1496,7 +1537,7 @@ def preview_video_files(folder, media_type, final_name, api_key):
             ext = item.suffix.lower().lstrip(".")
             name = final_name
             if multi:
-                per_name, _, error = lookup_folder(api_key, media_type, item.stem)
+                per_name, _, _, error = lookup_folder(api_key, media_type, item.stem)
                 if error:
                     print(error)
                     continue
@@ -1546,7 +1587,7 @@ def rename_video_files(folder, media_type, final_name, log, api_key):
             ext = item.suffix.lower().lstrip(".")
             name = final_name
             if multi:
-                per_name, _, error = lookup_folder(api_key, media_type, item.stem)
+                per_name, _, _, error = lookup_folder(api_key, media_type, item.stem)
                 if error:
                     print(error)
                     skipped += 1
@@ -2112,7 +2153,7 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
             break
 
         print(f"[{index}/{total}] {item.name}")
-        final_name, match_year, error = lookup_folder(api_key, "movie", item.stem)
+        final_name, match_year, _, error = lookup_folder(api_key, "movie", item.stem)
         if error:
             print(error)
             shown += 1
@@ -2224,7 +2265,7 @@ def run_scan(args, log):
         if extract_year(raw_name) is None:
             hint_year = infer_year_from_files(folder)
             vprint(f"  No year in folder name, inferred from files: {hint_year}")
-        final_name, match_year, error = lookup_folder(api_key, media_type, raw_name, hint_year)
+        final_name, match_year, _, error = lookup_folder(api_key, media_type, raw_name, hint_year)
 
         if error:
             print(error)
@@ -2333,6 +2374,120 @@ def run_scan(args, log):
     baseline = {name: sig for name, sig in baseline.items() if name in current_names}
     cache[share_key] = baseline
     save_scan_cache(cache)
+
+
+def collect_local_episodes(show_folder):
+    local = {}
+
+    for sub in list_subfolders(show_folder):
+        season = parse_season_folder_name(sub.name)
+        if season is None:
+            continue
+        for item in list_video_files(sub):
+            file_season, episode, marker = resolve_season_folder_file(item, season)
+            target_season = file_season if file_season is not None else season
+            if episode is not None:
+                local.setdefault(target_season, set()).add(episode)
+
+    for item in list_video_files(show_folder):
+        se = parse_season_episode(item.name)
+        if se:
+            local.setdefault(se[0], set()).add(se[1])
+
+    return local
+
+
+def check_show_episodes(api_key, show_folder):
+    raw_name = show_folder.name
+    final_name, match_year, tmdb_id, error = lookup_folder(api_key, "tv", raw_name)
+    if error or not tmdb_id:
+        return None, error or f"Could not resolve on TMDb: {raw_name}"
+
+    details, err = tmdb_tv_details(api_key, tmdb_id)
+    if err:
+        return None, f"Could not fetch show details: {raw_name} ({err})"
+
+    local = collect_local_episodes(show_folder)
+    today = datetime.date.today().isoformat()
+    missing = {}
+
+    for season_info in details.get("seasons", []):
+        season_number = season_info.get("season_number")
+        if season_number is None or season_number == 0:
+            continue
+
+        season_data, err = tmdb_tv_season(api_key, tmdb_id, season_number)
+        if err:
+            vprint(f"  Could not fetch season {season_number} for {raw_name}: {err}")
+            continue
+
+        local_episodes = local.get(season_number, set())
+        season_missing = []
+        for ep in season_data.get("episodes", []):
+            ep_number = ep.get("episode_number")
+            if ep_number is None or ep_number in local_episodes:
+                continue
+            air_date = ep.get("air_date")
+            if not air_date or air_date > today:
+                continue
+            season_missing.append(ep_number)
+
+        if season_missing:
+            missing[season_number] = sorted(season_missing)
+
+    return missing, None
+
+
+def run_episode_check(args):
+    path_arg = args.episodes if isinstance(args.episodes, str) else None
+    share = resolve_share(path_arg)
+
+    if infer_media_type(share) == "movie":
+        print("This looks like a Movies share. --episodes only checks TV show libraries.")
+        return
+
+    print()
+    print(f"Scanning: {share}")
+    print()
+
+    api_key = get_api_key()
+    get_tmdb_language()
+
+    shows = sorted(
+        p for p in Path(share).iterdir() if p.is_dir() and not p.name.startswith(".")
+    )
+
+    checked = 0
+    incomplete = 0
+    missing_episode_count = 0
+    lookup_errors = 0
+
+    for index, show_folder in enumerate(shows, start=1):
+        vprint(f"[{index}/{len(shows)}] Checking: {show_folder.name}")
+        missing, error = check_show_episodes(api_key, show_folder)
+
+        if error:
+            print(f"{show_folder.name}: {error}")
+            lookup_errors += 1
+            continue
+
+        checked += 1
+        if not missing:
+            continue
+
+        incomplete += 1
+        print(f"{show_folder.name}:")
+        for season_number in sorted(missing):
+            episodes = missing[season_number]
+            missing_episode_count += len(episodes)
+            ep_list = ", ".join(f"E{e:02d}" for e in episodes)
+            print(f"  S{season_number:02d}: missing {ep_list}")
+
+    print()
+    print("=== Summary ===")
+    print(f"Shows checked: {checked}, incomplete: {incomplete}, missing episodes: {missing_episode_count}")
+    if lookup_errors:
+        print(f"Shows skipped due to lookup errors: {lookup_errors}")
 
 
 def run_backup(args):
@@ -2550,11 +2705,17 @@ def build_parser():
         action="store_true",
         help="Restore from the most recent log file, without prompting. Cannot be combined with any other argument."
     )
+    parser.add_argument(
+        "-e", "--episodes",
+        nargs="?", const=True, default=False, metavar="PATH",
+        help="Check TV show folders against TMDb's episode list and report any missing (already-aired) episodes. "
+             "Read-only, makes no changes. Optionally pass a path to skip the share-selection prompt."
+    )
     return parser
 
 
-BUNDLABLE_FLAGS = {"y", "f", "t", "r", "v", "c"}
-PATH_TAKING_FLAGS = {"r", "c"}
+BUNDLABLE_FLAGS = {"y", "f", "t", "r", "v", "c", "e"}
+PATH_TAKING_FLAGS = {"r", "c", "e"}
 
 
 def expand_bundled_flags(argv):
@@ -2591,7 +2752,7 @@ def main():
         other_args_used = (
             args.yes or args.force or args.verbose or args.test is not None
             or args.rename or args.manual_rename or args.restore
-            or args.backup or args.cleanup
+            or args.backup or args.cleanup or args.episodes
         )
         if other_args_used:
             print("--undo cannot be combined with any other argument.")
@@ -2614,6 +2775,10 @@ def main():
 
     if args.manual_rename:
         run_manual_rename(args.manual_rename[0], args.manual_rename[1], log)
+        return
+
+    if args.episodes:
+        run_episode_check(args)
         return
 
     if args.cleanup and args.rename:
