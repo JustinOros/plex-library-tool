@@ -1343,6 +1343,149 @@ def rename_season_folder_files(folder, final_name, log):
     return renamed, skipped
 
 
+def infer_season_from_files(folder):
+    for item in sorted(folder.rglob("*")):
+        if not item.is_file() or item.suffix.lower().lstrip(".") not in VIDEO_EXTENSIONS:
+            continue
+        se = parse_season_episode(item.name)
+        if se:
+            return se[0]
+        season = parse_season_only(item.name)
+        if season is not None:
+            return season
+    return None
+
+
+def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_name, log):
+    moved = 0
+    skipped = 0
+
+    for sub in list_subfolders(source_folder):
+        season = parse_season_folder_name(sub.name)
+        if season is None:
+            continue
+
+        organize_subtitle_folder(sub, log)
+
+        for item in list_video_files(sub):
+            ext = item.suffix.lower().lstrip(".")
+            file_season, episode, marker = resolve_season_folder_file(item, season)
+            item_season = file_season if file_season is not None else season
+            item_season_folder = season_folder_name(item_season)
+            item_target_dir = target_folder / item_season_folder
+            subtitles = gather_video_subtitles(item, True)
+
+            new_name = item.name if episode is None else episode_file_name(
+                final_name, item_season, episode, ext, detect_resolution(item.name)
+            )
+            dest = item_target_dir / new_name
+            if dest.exists() and not same_existing_path(dest, item):
+                print(f"Skipping (target already exists): {item.name}")
+                skipped += 1
+                continue
+
+            item_target_dir.mkdir(exist_ok=True)
+            item.rename(dest)
+            log.record(item, dest)
+            print(f"Moved: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
+            moved += 1
+            moved += rename_consolidated_subtitles(subtitles, dest, log)
+
+        try:
+            if sub.exists() and not any(sub.iterdir()):
+                sub.rmdir()
+        except OSError:
+            pass
+
+    folder_season = parse_season_folder_name(raw_name)
+    if folder_season is None:
+        folder_season = infer_season_from_files(source_folder)
+
+    organize_subtitle_folder(source_folder, log)
+
+    for item in list_video_files(source_folder):
+        ext = item.suffix.lower().lstrip(".")
+        file_season, episode, marker = resolve_season_folder_file(item, folder_season)
+        item_season = file_season if file_season is not None else folder_season
+        subtitles = gather_video_subtitles(item, True)
+
+        if item_season is None or episode is None:
+            print(f"No season/episode found, skipping: {item.name}")
+            skipped += 1
+            continue
+
+        item_season_folder = season_folder_name(item_season)
+        item_target_dir = target_folder / item_season_folder
+        new_name = episode_file_name(final_name, item_season, episode, ext, detect_resolution(item.name))
+        dest = item_target_dir / new_name
+
+        if dest.exists() and not same_existing_path(dest, item):
+            print(f"Skipping (target already exists): {item.name}")
+            skipped += 1
+            continue
+
+        item_target_dir.mkdir(exist_ok=True)
+        item.rename(dest)
+        log.record(item, dest)
+        print(f"Moved: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
+        moved += 1
+        moved += rename_consolidated_subtitles(subtitles, dest, log)
+
+    try:
+        if source_folder.exists() and not any(source_folder.iterdir()):
+            source_folder.rmdir()
+            print(f"Removed empty folder: {source_folder}")
+    except OSError:
+        pass
+
+    return moved, skipped
+
+
+def preview_merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_name):
+    for sub in list_subfolders(source_folder):
+        season = parse_season_folder_name(sub.name)
+        if season is None:
+            continue
+
+        preview_subtitle_folder(sub)
+
+        for item in list_video_files(sub):
+            ext = item.suffix.lower().lstrip(".")
+            file_season, episode, marker = resolve_season_folder_file(item, season)
+            item_season = file_season if file_season is not None else season
+            item_season_folder = season_folder_name(item_season)
+            subtitles = gather_video_subtitles(item, True)
+
+            new_name = item.name if episode is None else episode_file_name(
+                final_name, item_season, episode, ext, detect_resolution(item.name)
+            )
+            dest = target_folder / item_season_folder / new_name
+            print(f"Move: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
+            preview_consolidated_subtitles(subtitles, dest)
+
+    folder_season = parse_season_folder_name(raw_name)
+    if folder_season is None:
+        folder_season = infer_season_from_files(source_folder)
+
+    preview_subtitle_folder(source_folder)
+
+    for item in list_video_files(source_folder):
+        ext = item.suffix.lower().lstrip(".")
+        file_season, episode, marker = resolve_season_folder_file(item, folder_season)
+        item_season = file_season if file_season is not None else folder_season
+        subtitles = gather_video_subtitles(item, True)
+
+        if item_season is None or episode is None:
+            print(f"No season/episode found, skipping: {item.name}")
+            continue
+
+        item_season_folder = season_folder_name(item_season)
+        new_name = episode_file_name(final_name, item_season, episode, ext, detect_resolution(item.name))
+        dest = target_folder / item_season_folder / new_name
+        print(f"Move: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
+        preview_consolidated_subtitles(subtitles, dest)
+
+
 def preview_video_files(folder, media_type, final_name, api_key):
     files = list_video_files(folder)
 
@@ -2066,6 +2209,7 @@ def run_scan(args, log):
     folders_skipped = 0
     files_renamed = 0
     files_skipped = 0
+    simulated_tv_folder_names = set()
 
     total_folders = len(subfolders)
 
@@ -2093,11 +2237,22 @@ def run_scan(args, log):
         if test_mode:
             new_folder = folder.parent / folder_name
             needs_rename = new_folder != folder
+            target_already_taken = (
+                new_folder.is_dir() or folder_name in simulated_tv_folder_names
+            ) and not same_existing_path(new_folder, folder)
+
+            if media_type == "tv" and needs_rename and target_already_taken:
+                print(f"Would merge into existing show folder: {raw_name} -> {folder_name}")
+                preview_merge_duplicate_show_folder(folder, new_folder, raw_name, final_name)
+                examples_shown += 1
+                continue
+
             if needs_rename:
                 print(f"Renamed folder: {raw_name} -> {folder_name}")
             else:
                 print(f"Skipping renaming (already correctly named): {raw_name}")
             if media_type == "tv":
+                simulated_tv_folder_names.add(folder_name)
                 preview_season_folders(folder)
                 preview_season_folder_files(folder, final_name)
             preview_video_files(folder, media_type, final_name, api_key)
@@ -2106,6 +2261,18 @@ def run_scan(args, log):
 
         new_folder = folder.parent / folder_name
         needs_rename = new_folder != folder
+
+        if needs_rename and media_type == "tv" and new_folder.is_dir() and not same_existing_path(new_folder, folder):
+            if not args.yes and not confirm(f"Merge '{raw_name}' into existing show folder '{folder_name}'?"):
+                print(f"Skipped: {raw_name}")
+                folders_skipped += 1
+                continue
+
+            merged, merge_skipped = merge_duplicate_show_folder(folder, new_folder, raw_name, final_name, log)
+            files_renamed += merged
+            files_skipped += merge_skipped
+            folders_renamed += 1
+            continue
 
         if needs_rename:
             if not args.yes and not confirm(f"Rename '{raw_name}' -> '{folder_name}'?"):
