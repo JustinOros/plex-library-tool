@@ -2360,6 +2360,83 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
     return folders_renamed, folders_skipped, files_renamed, files_skipped
 
 
+def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
+    files = list_loose_video_files(share)
+    if not files:
+        return 0, 0, 0, 0
+
+    print(f"Found {len(files)} loose TV episode file(s) directly in {Path(share).name} with no show folder of their own:")
+    print()
+
+    folders_renamed = 0
+    folders_skipped = 0
+    files_renamed = 0
+    files_skipped = 0
+    shown = 0
+    total = len(files)
+
+    for index, item in enumerate(files, start=1):
+        if test_mode and test_limit > 0 and shown >= test_limit:
+            break
+
+        print(f"[{index}/{total}] {item.name}")
+        final_name, match_year, match_id, error = lookup_folder(api_key, "tv", item.stem)
+        if error:
+            print(error)
+            shown += 1
+            files_skipped += 1
+            continue
+
+        se = parse_season_episode(item.name)
+        if se:
+            season, episode, marker = se
+        else:
+            resolved = resolve_absolute_episode(api_key, match_id, item.name)
+            if resolved is None:
+                print(f"No season/episode found, skipping: {item.name}")
+                shown += 1
+                files_skipped += 1
+                continue
+            season, episode = resolved
+
+        folder_name = folder_target_name("tv", final_name, match_year, item.stem)
+        target_folder = Path(share) / folder_name
+        target_season_folder_name = season_folder_name(season)
+        ext = item.suffix.lower().lstrip(".")
+        new_name = episode_file_name(final_name, season, episode, ext, detect_resolution(item.name))
+        dest = target_folder / target_season_folder_name / new_name
+        subtitles = gather_video_subtitles(item, True)
+
+        if test_mode:
+            print(f"Move: {item.name} -> {folder_name}/{target_season_folder_name}/{new_name}")
+            preview_consolidated_subtitles(subtitles, dest)
+            shown += 1
+            folders_renamed += 1
+            files_renamed += 1
+            continue
+
+        if not args.yes and not confirm(f"Move '{item.name}' into show folder '{folder_name}'?"):
+            print(f"Skipped: {item.name}")
+            files_skipped += 1
+            continue
+
+        if dest.exists() and not same_existing_path(dest, item):
+            print(f"Skipping (target already exists): {item.name}")
+            files_skipped += 1
+            continue
+
+        (target_folder / target_season_folder_name).mkdir(parents=True, exist_ok=True)
+        item.rename(dest)
+        log.record(item, dest)
+        print(f"Moved: {item.name} -> {folder_name}/{target_season_folder_name}/{new_name}")
+        folders_renamed += 1
+        files_renamed += 1
+        files_renamed += rename_consolidated_subtitles(subtitles, dest, log)
+
+    print()
+    return folders_renamed, folders_skipped, files_renamed, files_skipped
+
+
 def run_scan(args, log):
     path_arg = args.rename if isinstance(args.rename, str) else None
     share = resolve_share(path_arg)
@@ -2384,14 +2461,15 @@ def run_scan(args, log):
     test_limit = args.test or 0
 
     share_path = Path(share)
-    if media_type == "tv" and looks_like_single_show_folder(share_path):
+    is_single_show = media_type == "tv" and looks_like_single_show_folder(share_path)
+    if is_single_show:
         vprint(f"  {share_path.name} looks like a single show's folder, processing it directly")
         subfolders = [share_path]
     else:
         subfolders = sorted(
             p for p in share_path.iterdir() if p.is_dir() and not p.name.startswith(".")
         )
-    loose_files = list_loose_video_files(share) if media_type == "movie" else []
+    loose_files = [] if is_single_show else list_loose_video_files(share)
 
     unchanged_count = 0
     if not args.force:
@@ -2515,7 +2593,8 @@ def run_scan(args, log):
         baseline[folder.name] = compute_folder_signature(folder)
 
     if loose_files:
-        loose_folders_renamed, loose_folders_skipped, loose_files_renamed, loose_files_skipped = process_loose_movie_files(
+        loose_processor = process_loose_movie_files if media_type == "movie" else process_loose_tv_files
+        loose_folders_renamed, loose_folders_skipped, loose_files_renamed, loose_files_skipped = loose_processor(
             share, api_key, log, test_mode, test_limit, args
         )
         folders_renamed += loose_folders_renamed
@@ -2610,16 +2689,14 @@ SPECIALS_FOLDER_PATTERN = re.compile(r'^specials?$', re.IGNORECASE)
 
 
 def looks_like_single_show_folder(folder):
-    if list_video_files(folder):
-        return True
     subfolders = list_subfolders(folder)
-    if not subfolders:
-        return False
-    season_like = sum(
-        1 for s in subfolders
-        if parse_season_folder_name(s.name) is not None or SPECIALS_FOLDER_PATTERN.match(s.name)
-    )
-    return season_like > len(subfolders) / 2
+    if subfolders:
+        season_like = sum(
+            1 for s in subfolders
+            if parse_season_folder_name(s.name) is not None or SPECIALS_FOLDER_PATTERN.match(s.name)
+        )
+        return season_like > len(subfolders) / 2
+    return bool(list_video_files(folder))
 
 
 def run_episode_check(args):
