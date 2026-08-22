@@ -742,6 +742,9 @@ JUNK_TOKENS = {
     "se", "ce", "remastered", "anniversary", "edition",
     "amzn", "nf", "dsnp", "hmax", "atvp", "pcok", "hulu",
     "mb", "gb",
+    "subbed", "dubbed", "subs", "multisub",
+    "telesync", "telecine", "camrip", "hdcam", "hdts", "hdtc",
+    "r5", "screener", "dvdscr", "workprint",
 }
 
 SEASON_RANGE_PATTERN = re.compile(r'\bSeasons?\b(?:\s+\d{1,2})+', re.IGNORECASE)
@@ -772,9 +775,22 @@ RELEASE_GROUP_SUFFIX_PATTERN = re.compile(
 )
 
 AUDIO_CHANNELS_PATTERN = re.compile(r'(?<![0-9])\d\.\d(?![0-9])')
+AUDIO_CODEC_CHANNELS_PATTERN = re.compile(
+    r'\b(DDP?|EAC3|AC3|TrueHD|Atmos|DTS(?:-HD)?|FLAC|AAC)[.\s]?\d(?:[.\s]\d)?\b',
+    re.IGNORECASE,
+)
+VIDEO_CODEC_SPACED_PATTERN = re.compile(r'\b[Hh][.\s]?(26[45])\b')
+LEADING_TAG_DASH_CHARS = '-' + chr(8211) + chr(8212)
+LEADING_TAG_PATTERN = re.compile(r'^\s*\[[^\[\]]*\](?:\([^()]*\))?\s*[' + re.escape(LEADING_TAG_DASH_CHARS) + r']+\s*')
+URL_PATTERN = re.compile(r'https?://\S+', re.IGNORECASE)
+WWW_DOMAIN_PATTERN = re.compile(r'\bwww\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+\b', re.IGNORECASE)
 TRAILING_PAREN_BLOCK_PATTERN = re.compile(r'\([^()]*\)\s*$')
 TRAILING_BRACKET_TAG_PATTERN = re.compile(r'\[[^\[\]]*\]\s*$')
 BARE_YEAR_PATTERN = re.compile(r'(19|20)\d{2}$')
+
+
+def strip_leading_watermark(raw_name):
+    return LEADING_TAG_PATTERN.sub('', raw_name, count=1)
 
 
 def strip_trailing_bracket_tags(name):
@@ -817,6 +833,10 @@ def strip_junk_trailing_paren(raw_name):
 
 
 def build_query(raw_name, year):
+    raw_name = strip_leading_watermark(raw_name)
+    raw_name = URL_PATTERN.sub(' ', raw_name)
+    raw_name = WWW_DOMAIN_PATTERN.sub(' ', raw_name)
+
     cut_points = []
     match = SEASON_TRUNCATE_PATTERN.search(raw_name)
     if match:
@@ -829,6 +849,8 @@ def build_query(raw_name, year):
         if cut > 0:
             raw_name = raw_name[:cut]
 
+    raw_name = VIDEO_CODEC_SPACED_PATTERN.sub(r'H\1', raw_name)
+    raw_name = AUDIO_CODEC_CHANNELS_PATTERN.sub(' ', raw_name)
     raw_name = AUDIO_CHANNELS_PATTERN.sub(' ', raw_name)
     raw_name = strip_junk_trailing_paren(raw_name)
 
