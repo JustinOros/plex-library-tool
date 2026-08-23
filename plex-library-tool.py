@@ -739,7 +739,7 @@ JUNK_TOKENS = {
     "hdr", "sdr", "4k", "uhd", "10bit", "8bit", "hi10p", "hi444pp",
     "deluxe", "boxset", "box", "set", "extras", "hd",
     "complete", "collection", "series",
-    "se", "ce", "remastered", "anniversary", "edition",
+    "se", "ce", "dc", "remastered", "anniversary", "edition",
     "amzn", "nf", "dsnp", "hmax", "atvp", "pcok", "hulu",
     "mb", "gb",
     "subbed", "dubbed", "subs", "multisub",
