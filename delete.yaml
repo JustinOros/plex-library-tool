@@ -126,19 +126,20 @@
 # subtitles:
 #   - "!Spanish"
 
- folders:
-   - Screens
-   - Featurettes
-   - Extras
-   - Sample
-   - Samples
-   - Behind the Scenes
-   - Deleted Scenes
-   - Trailers
-   - Interviews
-   - Bonus
-   - "* torrent"
-   - "* torrents"
+folders:
+  - Screens
+  - Featurettes
+  - Extras
+  - Sample
+  - Samples
+  - Soundtrack
+  - Behind the Scenes
+  - Deleted Scenes
+  - Trailers
+  - Interviews
+  - Bonus
+  - "* torrent"
+  - "* torrents"
 
 files:
    - "*.txt"

@@ -64,23 +64,38 @@ LEGACY_SEE_PATTERN = re.compile(r'(?<![A-Za-z0-9])([1-9])(\d{2})(?![A-Za-z0-9])'
 class RenameLog:
     def __init__(self):
         self.entries = []
+        self.label = None
+        self.log_path = None
 
-    def record(self, from_path, to_path):
-        self.entries.append({"from": str(from_path), "to": str(to_path)})
+    def set_label(self, label):
+        self.label = label
 
-    def save(self, label=None):
-        if not self.entries:
-            return None
+    def _ensure_path(self):
+        if self.log_path is not None:
+            return
         LOG_DIR.mkdir(exist_ok=True)
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        suffix = f"-{re.sub(r'[^A-Za-z0-9]+', '_', label).strip('_')}" if label else ""
+        suffix = f"-{re.sub(r'[^A-Za-z0-9]+', '_', self.label).strip('_')}" if self.label else ""
         log_path = LOG_DIR / f"{timestamp}{suffix}.json"
         counter = 1
         while log_path.exists():
             log_path = LOG_DIR / f"{timestamp}{suffix}-{counter}.json"
             counter += 1
-        log_path.write_text(json.dumps(self.entries, indent=2))
-        return log_path
+        self.log_path = log_path
+
+    def record(self, from_path, to_path):
+        self.entries.append({"from": str(from_path), "to": str(to_path)})
+        self._ensure_path()
+        self.log_path.write_text(json.dumps(self.entries, indent=2), encoding="utf-8")
+
+    def save(self, label=None):
+        if not self.entries:
+            return None
+        if label and self.label is None:
+            self.set_label(label)
+        self._ensure_path()
+        self.log_path.write_text(json.dumps(self.entries, indent=2), encoding="utf-8")
+        return self.log_path
 
 
 SUPERSCRIPT_DIGITS = {
@@ -109,6 +124,10 @@ def squeeze_spaces(name):
 
 def clean_and_squeeze(name):
     return squeeze_spaces(clean_name(name))
+
+
+def clean_display_title(name):
+    return squeeze_spaces(normalize_special_chars(name))
 
 
 def extract_year(name):
@@ -712,6 +731,16 @@ def same_existing_path(dest, src):
         return False
 
 
+def safe_rename(src, dest):
+    try:
+        src.rename(dest)
+        return True, None
+    except FileExistsError:
+        return False, "target already exists"
+    except OSError as e:
+        return False, str(e)
+
+
 def confirm(prompt):
     answer = input(f"{prompt} [y/N] ").strip().lower()
     return answer in ("y", "yes")
@@ -1054,17 +1083,18 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
 
     query_norm = clean_and_squeeze(query).lower()
     title = result_title(media_type, match)
-    final_name = clean_and_squeeze(title)
+    final_name = clean_display_title(title)
+    title_norm = clean_and_squeeze(title).lower()
     vprint(f"  Best match: {title!r} (id={match.get('id')})")
 
-    if final_name.lower() != query_norm:
+    if title_norm != query_norm:
         vprint("  Title differs from query, checking alternative titles...")
         for candidate in results[:ALT_TITLE_CHECK_LIMIT]:
             alt_titles = tmdb_alternative_titles(api_key, media_type, candidate.get("id"))
             hit = next((a for a in alt_titles if clean_and_squeeze(a).lower() == query_norm), None)
             if hit:
                 match = candidate
-                final_name = clean_and_squeeze(hit)
+                final_name = clean_display_title(hit)
                 vprint(f"  Alternative title match: {hit!r} (id={candidate.get('id')})")
                 break
 
@@ -1375,7 +1405,10 @@ def rename_consolidated_subtitles(subtitles, new_video_path, log):
             continue
         dest.parent.mkdir(exist_ok=True)
         source_dir = item.parent
-        item.rename(dest)
+        ok, err = safe_rename(item, dest)
+        if not ok:
+            print(f"Skipping subtitle ({err}): {item.name}")
+            continue
         log.record(item, dest)
         label = "subtitle index" if dest.suffix.lower() == ".idx" else "subtitle"
         if source_dir == dest.parent:
@@ -1426,7 +1459,10 @@ def organize_subtitle_folder(folder, log):
             print(f"Skipping (target already exists): {entry.name} -> {canonical_name}")
             continue
 
-        entry.rename(dest)
+        ok, err = safe_rename(entry, dest)
+        if not ok:
+            print(f"Skipping ({err}): {entry.name} -> {canonical_name}")
+            continue
         log.record(entry, dest)
         print(f"Renamed folder: {entry.name} -> {canonical_name}")
 
@@ -1473,21 +1509,32 @@ def organize_season_folders(folder, log):
         if dest.exists() and not same_existing_path(dest, sub):
             print(f"Skipping (target already exists): {sub.name} -> {new_name}")
             continue
-        sub.rename(dest)
+        ok, err = safe_rename(sub, dest)
+        if not ok:
+            print(f"Skipping ({err}): {sub.name} -> {new_name}")
+            continue
         log.record(sub, dest)
         print(f"Renamed folder: {sub.name} -> {new_name}")
         renamed += 1
     return renamed
 
 
-def resolve_season_folder_file(item, season):
+def resolve_season_folder_file(item, season, api_key=None, tmdb_id=None):
     se = parse_season_episode(item.name)
     if se:
         return se[0], se[1], se[2]
-    return parse_season_only(item.name), parse_episode_only(item.name), 'E'
+
+    file_season = parse_season_only(item.name)
+    episode = parse_episode_only(item.name)
+    if episode is None:
+        resolved = resolve_absolute_episode(api_key, tmdb_id, item.name)
+        if resolved is not None:
+            return resolved[0], resolved[1], 'E'
+
+    return file_season, episode, 'E'
 
 
-def preview_season_folder_files(folder, final_name):
+def preview_season_folder_files(folder, final_name, api_key=None, tmdb_id=None):
     for sub in list_subfolders(folder):
         season = parse_season_folder_name(sub.name)
         if season is None:
@@ -1497,7 +1544,7 @@ def preview_season_folder_files(folder, final_name):
 
         for item in list_video_files(sub):
             ext = item.suffix.lower().lstrip(".")
-            file_season, episode, marker = resolve_season_folder_file(item, season)
+            file_season, episode, marker = resolve_season_folder_file(item, season, api_key, tmdb_id)
             target_season = file_season if file_season is not None else season
             subtitles = gather_video_subtitles(item, True)
 
@@ -1525,7 +1572,7 @@ def preview_season_folder_files(folder, final_name):
                 preview_consolidated_subtitles(subtitles, item)
 
 
-def rename_season_folder_files(folder, final_name, log):
+def rename_season_folder_files(folder, final_name, log, api_key=None, tmdb_id=None):
     renamed = 0
     skipped = 0
 
@@ -1538,7 +1585,7 @@ def rename_season_folder_files(folder, final_name, log):
 
         for item in list_video_files(sub):
             ext = item.suffix.lower().lstrip(".")
-            file_season, episode, marker = resolve_season_folder_file(item, season)
+            file_season, episode, marker = resolve_season_folder_file(item, season, api_key, tmdb_id)
             target_season = file_season if file_season is not None else season
             target_season_folder = season_folder_name(target_season)
             target_dir = folder / target_season_folder if target_season != season else sub
@@ -1564,7 +1611,11 @@ def rename_season_folder_files(folder, final_name, log):
 
             if target_dir != sub:
                 target_dir.mkdir(exist_ok=True)
-            item.rename(dest)
+            ok, err = safe_rename(item, dest)
+            if not ok:
+                print(f"Skipping ({err}): {item.name}")
+                skipped += 1
+                continue
             log.record(item, dest)
             if target_dir != sub:
                 print(f"Moved: {item.name} -> {target_season_folder}/{new_name}")
@@ -1618,7 +1669,11 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
                 continue
 
             item_target_dir.mkdir(exist_ok=True)
-            item.rename(dest)
+            ok, err = safe_rename(item, dest)
+            if not ok:
+                print(f"Skipping ({err}): {item.name}")
+                skipped += 1
+                continue
             log.record(item, dest)
             print(f"Moved: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
             moved += 1
@@ -1658,7 +1713,11 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
             continue
 
         item_target_dir.mkdir(exist_ok=True)
-        item.rename(dest)
+        ok, err = safe_rename(item, dest)
+        if not ok:
+            print(f"Skipping ({err}): {item.name}")
+            skipped += 1
+            continue
         log.record(item, dest)
         print(f"Moved: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
         moved += 1
@@ -1803,7 +1862,11 @@ def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=Non
                 print(f"Skipping (target already exists): {item.name}")
                 skipped += 1
                 continue
-            item.rename(dest)
+            ok, err = safe_rename(item, dest)
+            if not ok:
+                print(f"Skipping ({err}): {item.name}")
+                skipped += 1
+                continue
             log.record(item, dest)
             print(f"Renamed file: {item.name} -> {new_name}")
             renamed += 1
@@ -1844,7 +1907,11 @@ def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=Non
             continue
 
         season_dir.mkdir(exist_ok=True)
-        item.rename(dest)
+        ok, err = safe_rename(item, dest)
+        if not ok:
+            print(f"Skipping ({err}): {item.name}")
+            skipped += 1
+            continue
         log.record(item, dest)
         print(f"Moved: {item.name} -> {target_season_folder}/{new_name}")
         renamed += 1
@@ -2217,6 +2284,7 @@ def remove_empty_folders(share, confirm_all, dry_run=False):
 def run_cleanup(args, log):
     path_arg = args.cleanup if isinstance(args.cleanup, str) else None
     share = resolve_share(path_arg)
+    log.set_label(f"{Path(share).name}-cleanup")
 
     delete_folder_names = load_delete_folder_names()
     delete_file_patterns = load_delete_file_patterns()
@@ -2391,7 +2459,11 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
             continue
 
         target_folder.mkdir(exist_ok=True)
-        item.rename(dest)
+        ok, err = safe_rename(item, dest)
+        if not ok:
+            print(f"Skipping ({err}): {item.name}")
+            folders_skipped += 1
+            continue
         log.record(item, dest)
         print(f"Moved: {item.name} -> {folder_name}/{new_name}")
         folders_renamed += 1
@@ -2468,7 +2540,11 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
             continue
 
         (target_folder / target_season_folder_name).mkdir(parents=True, exist_ok=True)
-        item.rename(dest)
+        ok, err = safe_rename(item, dest)
+        if not ok:
+            print(f"Skipping ({err}): {item.name}")
+            files_skipped += 1
+            continue
         log.record(item, dest)
         print(f"Moved: {item.name} -> {folder_name}/{target_season_folder_name}/{new_name}")
         folders_renamed += 1
@@ -2482,6 +2558,7 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
 def run_scan(args, log):
     path_arg = args.rename if isinstance(args.rename, str) else None
     share = resolve_share(path_arg)
+    log.set_label(Path(share).name)
 
     cache = load_scan_cache()
     share_key = str(Path(share).resolve())
@@ -2583,7 +2660,7 @@ def run_scan(args, log):
             if media_type == "tv":
                 simulated_tv_folder_names.add(folder_name)
                 preview_season_folders(folder)
-                preview_season_folder_files(folder, final_name)
+                preview_season_folder_files(folder, final_name, api_key, match_id)
             preview_video_files(folder, media_type, final_name, api_key, match_id)
             examples_shown += 1
             continue
@@ -2614,7 +2691,11 @@ def run_scan(args, log):
                 folders_skipped += 1
                 continue
 
-            folder.rename(new_folder)
+            ok, err = safe_rename(folder, new_folder)
+            if not ok:
+                print(f"Skipping ({err}): {raw_name} -> {folder_name}")
+                folders_skipped += 1
+                continue
             log.record(folder, new_folder)
             print(f"Renamed folder: {raw_name} -> {folder_name}")
             folders_renamed += 1
@@ -2624,7 +2705,7 @@ def run_scan(args, log):
 
         if media_type == "tv":
             organize_season_folders(folder, log)
-            sub_renamed, sub_skipped = rename_season_folder_files(folder, final_name, log)
+            sub_renamed, sub_skipped = rename_season_folder_files(folder, final_name, log, api_key, match_id)
             files_renamed += sub_renamed
             files_skipped += sub_skipped
 
@@ -2844,6 +2925,7 @@ def run_backup(args):
 
 
 def run_manual_rename(current_name, new_name, log):
+    log.set_label("manual")
     src = Path(current_name)
     dst = Path(new_name)
 
