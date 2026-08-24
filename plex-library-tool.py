@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import concurrent.futures
 import ctypes
 import datetime
 import fnmatch
@@ -2555,6 +2556,44 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
     return folders_renamed, folders_skipped, files_renamed, files_skipped
 
 
+LOOKUP_WORKERS = 8
+
+
+def prefetch_lookups(api_key, media_type, folders):
+    lookup_cache = {}
+    if not folders:
+        return lookup_cache
+
+    print(f"Looking up {len(folders)} folder(s) on TMDb...")
+
+    global vprint
+    real_vprint = vprint
+    vprint = lambda *a, **k: None
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as executor:
+            futures = {}
+            for folder in folders:
+                raw_name = folder.name
+                hint_year = None
+                if extract_year(raw_name) is None:
+                    hint_year = infer_year_from_files(folder)
+                futures[executor.submit(lookup_folder, api_key, media_type, raw_name, hint_year)] = (folder, hint_year)
+
+            for future in concurrent.futures.as_completed(futures):
+                folder, hint_year = futures[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = (None, None, None, f"Lookup failed: {folder.name} ({e})")
+                lookup_cache[folder] = (hint_year, result)
+    finally:
+        vprint = real_vprint
+
+    print()
+    return lookup_cache
+
+
 def run_scan(args, log):
     path_arg = args.rename if isinstance(args.rename, str) else None
     share = resolve_share(path_arg)
@@ -2619,6 +2658,9 @@ def run_scan(args, log):
 
     total_folders = len(subfolders)
 
+    prefetch_targets = subfolders[:test_limit] if (test_mode and test_limit > 0) else subfolders
+    lookup_cache = prefetch_lookups(api_key, media_type, prefetch_targets)
+
     for index, folder in enumerate(subfolders, start=1):
         if test_mode and test_limit > 0 and examples_shown >= test_limit:
             break
@@ -2626,11 +2668,17 @@ def run_scan(args, log):
         raw_name = folder.name
         print(f"[{index}/{total_folders}] {raw_name}")
         vprint(f"Processing folder: {folder}")
-        hint_year = None
-        if extract_year(raw_name) is None:
-            hint_year = infer_year_from_files(folder)
-            vprint(f"  No year in folder name, inferred from files: {hint_year}")
-        final_name, match_year, match_id, error = lookup_folder(api_key, media_type, raw_name, hint_year)
+
+        if folder in lookup_cache:
+            hint_year, (final_name, match_year, match_id, error) = lookup_cache[folder]
+            if hint_year is not None:
+                vprint(f"  No year in folder name, inferred from files: {hint_year}")
+        else:
+            hint_year = None
+            if extract_year(raw_name) is None:
+                hint_year = infer_year_from_files(folder)
+                vprint(f"  No year in folder name, inferred from files: {hint_year}")
+            final_name, match_year, match_id, error = lookup_folder(api_key, media_type, raw_name, hint_year)
 
         if error:
             print(error)
