@@ -149,11 +149,12 @@ def parse_season_episode(filename):
             episode = int(m.group(2))
             return season, episode, marker
 
-    m = LEGACY_SEE_PATTERN.search(filename)
-    if m:
-        season = int(m.group(1))
-        episode = int(m.group(2))
-        return season, episode, 'E'
+    if parse_season_only(filename) is None and parse_episode_only(filename) is None:
+        m = LEGACY_SEE_PATTERN.search(filename)
+        if m:
+            season = int(m.group(1))
+            episode = int(m.group(2))
+            return season, episode, 'E'
 
     return None
 
