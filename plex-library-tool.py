@@ -794,11 +794,13 @@ IN_FORMAT_PATTERN = re.compile(r'\bin\s+(?:full\s+)?(?:hd|4k|uhd|sd)\b', re.IGNO
 
 
 FILE_SIZE_PATTERN = re.compile(r'\b\d+(?:\.\d+)?\s?(?:MB|GB)\b', re.IGNORECASE)
+BIT_DEPTH_PATTERN = re.compile(r'\b\d{1,2}bits?\b', re.IGNORECASE)
 
 
 def strip_junk_tokens(text):
     text = re.sub(r'\b\d{3,4}p\b', ' ', text, flags=re.IGNORECASE)
     text = FILE_SIZE_PATTERN.sub(' ', text)
+    text = BIT_DEPTH_PATTERN.sub(' ', text)
     text = SEASON_RANGE_PATTERN.sub(' ', text)
     text = IN_FORMAT_PATTERN.sub(' ', text)
     words = text.split()
