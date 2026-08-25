@@ -127,6 +127,16 @@ def clean_and_squeeze(name):
     return squeeze_spaces(clean_name(name))
 
 
+def clean_name_keep_hyphens(name):
+    name = normalize_special_chars(name)
+    name = re.sub(r'[._]+', ' ', name)
+    return re.sub(r'[^A-Za-z0-9 \-]', '', name)
+
+
+def clean_and_squeeze_keep_hyphens(name):
+    return squeeze_spaces(clean_name_keep_hyphens(name))
+
+
 def clean_display_title(name):
     return squeeze_spaces(normalize_special_chars(name))
 
@@ -864,7 +874,7 @@ def strip_junk_trailing_paren(raw_name):
     return raw_name
 
 
-def build_query(raw_name, year):
+def build_query(raw_name, year, keep_hyphens=False):
     raw_name = strip_leading_watermark(raw_name)
     raw_name = URL_PATTERN.sub(' ', raw_name)
     raw_name = WWW_DOMAIN_PATTERN.sub(' ', raw_name)
@@ -892,7 +902,8 @@ def build_query(raw_name, year):
 
     raw_name = strip_trailing_bracket_tags(raw_name)
 
-    cleaned = clean_and_squeeze(raw_name)
+    cleaner = clean_and_squeeze_keep_hyphens if keep_hyphens else clean_and_squeeze
+    cleaned = cleaner(raw_name)
     if year:
         without_year = squeeze_spaces(re.sub(rf'(?<!\d){year}(?!\d)', '', cleaned))
         if without_year:
@@ -1081,6 +1092,21 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
     vprint(f"  TMDb returned {len(results)} result(s)")
 
     match = best_match(media_type, results, year, query)
+
+    if not match and "-" in raw_name:
+        hyphen_query = build_query(raw_name, year, keep_hyphens=True)
+        if hyphen_query != query:
+            quoted_query = f'"{hyphen_query}"'
+            vprint(f"  No match, retrying as quoted phrase (TMDb treats bare hyphens as query operators): query={quoted_query!r}")
+            hyphen_results, hyphen_err = tmdb_search(api_key, media_type, quoted_query)
+            if not hyphen_err:
+                vprint(f"  TMDb returned {len(hyphen_results)} result(s)")
+                hyphen_match = best_match(media_type, hyphen_results, year, hyphen_query)
+                if hyphen_match:
+                    match = hyphen_match
+                    results = hyphen_results
+                    query = hyphen_query
+
     if not match:
         return None, None, None, f"No match found (Ignoring): {raw_name}"
 
@@ -2570,7 +2596,8 @@ def prefetch_lookups(api_key, media_type, folders):
 
     global vprint
     real_vprint = vprint
-    vprint = lambda *a, **k: None
+    if not VERBOSE:
+        vprint = lambda *a, **k: None
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as executor:
