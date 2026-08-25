@@ -776,6 +776,7 @@ JUNK_TOKENS = {
     "subbed", "dubbed", "subs", "multisub",
     "telesync", "telecine", "camrip", "hdcam", "hdts", "hdtc",
     "r5", "screener", "dvdscr", "workprint",
+    "retail",
 }
 
 SEASON_RANGE_PATTERN = re.compile(r'\bSeasons?\b(?:\s+\d{1,2})+', re.IGNORECASE)
