@@ -1459,6 +1459,40 @@ def gather_video_subtitles(video_path, multi):
     return matches
 
 
+SDH_CUE_PATTERN = re.compile(r'[\[\(][A-Za-z][^\]\)]{1,40}[\]\)]')
+
+
+def detect_sdh_from_content(path):
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return False
+
+    text = None
+    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    if text is None:
+        return False
+
+    dialogue_lines = 0
+    cue_lines = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.isdigit() or "-->" in line:
+            continue
+        dialogue_lines += 1
+        if SDH_CUE_PATTERN.search(line):
+            cue_lines += 1
+
+    if dialogue_lines < 5:
+        return False
+    return (cue_lines / dialogue_lines) >= 0.15
+
+
 def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
     new_stem = new_video_path.stem
     target_dir = new_video_path.parent / subtitle_folder_name()
@@ -1479,7 +1513,11 @@ def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
 
         used_names = set()
         for item in group:
-            descriptor = subtitle_descriptor_from_name(item.name) if len(group) > 1 else None
+            descriptor = None
+            if len(group) > 1:
+                descriptor = subtitle_descriptor_from_name(item.name)
+                if descriptor is None and detect_sdh_from_content(item):
+                    descriptor = "sdh"
             lang_tag = f"{primary_lang}.{descriptor}" if descriptor else primary_lang
             name = subtitle_file_name(new_stem, ext.lstrip("."), lang_tag)
             if name in used_names:
