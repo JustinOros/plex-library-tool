@@ -828,6 +828,14 @@ def safe_rename(src, dest):
         return False, str(e)
 
 
+def safe_move(src, dest):
+    try:
+        shutil.move(str(src), str(dest))
+        return True, None
+    except OSError as e:
+        return False, str(e)
+
+
 def confirm(prompt):
     answer = input(f"{prompt} [y/N] ").strip().lower()
     return answer in ("y", "yes")
@@ -1541,6 +1549,23 @@ def detect_sdh_from_content(path):
     return is_sdh
 
 
+def subtitle_content_hash(path):
+    text = read_subtitle_text(path)
+    if text is None:
+        return None
+    lines = subtitle_dialogue_lines(text)
+    if not lines:
+        return None
+    normalized = "\n".join(lines).strip().lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def duplicate_trash_path(item):
+    dest_dir = CLEANUP_TRASH_DIR / "duplicate-subtitles"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    return unique_destination(dest_dir / item.name)
+
+
 def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
     new_stem = new_video_path.stem
     target_dir = new_video_path.parent / subtitle_folder_name()
@@ -1551,6 +1576,7 @@ def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
         by_ext.setdefault(item.suffix.lower(), []).append(item)
 
     canonical = {}
+    duplicates = set()
     for ext, items in by_ext.items():
         detected = {i: resolve_subtitle_language(i) for i in items}
         group = [i for i in items if detected[i] == primary_lang]
@@ -1577,8 +1603,27 @@ def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
                             vprint(f"    {i.name}: {line_counts[i]}/{max_lines} line(s) vs longest track -> forced")
                             descriptors[i] = "forced"
 
+            still_undecided = [i for i in group if descriptors[i] is None]
+            if len(still_undecided) > 1:
+                by_hash = {}
+                for i in still_undecided:
+                    h = subtitle_content_hash(i)
+                    if h is None:
+                        continue
+                    by_hash.setdefault(h, []).append(i)
+                for dupes in by_hash.values():
+                    if len(dupes) < 2:
+                        continue
+                    keeper = min(dupes, key=lambda p: (len(p.name), p.name))
+                    for d in dupes:
+                        if d != keeper:
+                            duplicates.add(d)
+                            vprint(f"    {d.name}: identical content to {keeper.name}, will move to trash")
+
         used_names = set()
         for item in group:
+            if item in duplicates:
+                continue
             descriptor = descriptors.get(item)
             lang_tag = f"{primary_lang}.{descriptor}" if descriptor else primary_lang
             name = subtitle_file_name(new_stem, ext.lstrip("."), lang_tag)
@@ -1589,6 +1634,9 @@ def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
 
     pairs = []
     for item in subtitles:
+        if item in duplicates:
+            pairs.append((item, None))
+            continue
         dest_name = canonical.get(item, item.name)
         dest = target_dir / dest_name
         pairs.append((item, dest))
@@ -1596,7 +1644,9 @@ def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
         if item.suffix.lower() == ".sub":
             idx_item = item.with_suffix(".idx")
             if idx_item.exists():
-                if item in canonical:
+                if item in duplicates:
+                    idx_dest = None
+                elif item in canonical:
                     idx_dest = target_dir / (canonical[item].rsplit(".", 1)[0] + ".idx")
                 else:
                     idx_dest = target_dir / idx_item.name
@@ -1629,6 +1679,19 @@ def rename_consolidated_subtitles(subtitles, new_video_path, log):
     renamed = 0
     source_dirs = set()
     for item, dest in compute_consolidated_subtitle_pairs(subtitles, new_video_path):
+        if dest is None:
+            source_dir = item.parent
+            trash_dest = duplicate_trash_path(item)
+            ok, err = safe_move(item, trash_dest)
+            if not ok:
+                print(f"Skipping duplicate subtitle ({err}): {item.name}")
+                continue
+            log.record(item, trash_dest)
+            print(f"Moved duplicate subtitle to trash: {item.name}")
+            renamed += 1
+            if source_dir.name.lower() in SUBTITLE_FOLDER_NAMES:
+                source_dirs.add(source_dir)
+            continue
         if dest == item:
             continue
         if dest.exists() and not same_existing_path(dest, item):
@@ -1665,6 +1728,9 @@ def rename_consolidated_subtitles(subtitles, new_video_path, log):
 
 def preview_consolidated_subtitles(subtitles, new_video_path):
     for item, dest in compute_consolidated_subtitle_pairs(subtitles, new_video_path):
+        if dest is None:
+            print(f"Would move duplicate subtitle to trash: {item.name}")
+            continue
         if dest == item:
             continue
         label = "subtitle index" if dest.suffix.lower() == ".idx" else "subtitle"
@@ -2986,15 +3052,18 @@ def run_scan(args, log):
     test_limit = args.test or 0
 
     share_path = Path(share)
+    flatten_self_nested_folder(share_path, log)
     is_single_show = media_type == "tv" and looks_like_single_show_folder(share_path)
-    if is_single_show:
-        vprint(f"  {share_path.name} looks like a single show's folder, processing it directly")
+    is_single_movie = media_type == "movie" and looks_like_single_movie_folder(share_path)
+    if is_single_show or is_single_movie:
+        kind = "show" if is_single_show else "movie"
+        vprint(f"  {share_path.name} looks like a single {kind}'s folder, processing it directly")
         subfolders = [share_path]
     else:
         subfolders = sorted(
             p for p in share_path.iterdir() if p.is_dir() and not p.name.startswith(".")
         )
-    loose_files = [] if is_single_show else list_loose_video_files(share)
+    loose_files = [] if (is_single_show or is_single_movie) else list_loose_video_files(share)
 
     unchanged_count = 0
     if not args.force:
@@ -3224,6 +3293,61 @@ def check_show_episodes(api_key, show_folder):
 
 
 SPECIALS_FOLDER_PATTERN = re.compile(r'^specials?$', re.IGNORECASE)
+
+
+def flatten_self_nested_folder(folder, log):
+    try:
+        children = [c for c in folder.iterdir() if not c.name.startswith(".")]
+    except OSError:
+        return False
+
+    nested = [c for c in children if c.is_dir() and c.name == folder.name]
+    if len(nested) != 1:
+        return False
+
+    inner = nested[0]
+    if any(c != inner for c in children):
+        return False
+
+    try:
+        inner_items = list(inner.iterdir())
+    except OSError:
+        return False
+
+    vprint(f"  {folder.name} contains a self-nested duplicate folder, flattening it")
+    for item in inner_items:
+        dest = folder / item.name
+        if dest.exists():
+            print(f"Skipping flatten (target already exists): {item.name}")
+            continue
+        ok, err = safe_rename(item, dest)
+        if not ok:
+            print(f"Skipping flatten ({err}): {item.name}")
+            continue
+        log.record(item, dest)
+        print(f"Moved: {item.name} -> {folder.name}/{item.name}")
+
+    try:
+        purge_ignorable_junk(inner)
+        if inner.exists() and is_effectively_empty(inner):
+            inner.rmdir()
+            print(f"Removed empty folder: {inner}")
+    except OSError:
+        pass
+
+    return True
+
+
+def looks_like_single_movie_folder(folder):
+    if not list_video_files(folder):
+        return False
+    subfolders = [
+        s for s in list_subfolders(folder)
+        if s.name.lower() not in SUBTITLE_FOLDER_NAMES
+    ]
+    if not subfolders:
+        return True
+    return not any(list_video_files(s) for s in subfolders)
 
 
 def looks_like_single_show_folder(folder):
