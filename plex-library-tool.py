@@ -2492,6 +2492,9 @@ def run_cleanup(args, log):
     share = resolve_share(path_arg)
     log.set_label(f"{Path(share).name}-cleanup")
 
+    print()
+    print("Performing action: Cleanup")
+
     delete_folder_names = load_delete_folder_names()
     delete_file_patterns = load_delete_file_patterns()
     keep_languages, delete_languages = load_delete_subtitle_rules()
@@ -2815,6 +2818,8 @@ def run_scan(args, log):
     media_type = determine_media_type(share)
 
     print()
+    print("Performing action: Rename")
+    print()
     print(f"Scanning: {share}")
     print()
 
@@ -3084,6 +3089,8 @@ def run_episode_check(args):
         print("This looks like a Movies share. --episodes only checks TV show libraries.")
         return
 
+    print()
+    print("Performing action: Episode Check")
     print()
     print(f"Scanning: {share}")
     print()
