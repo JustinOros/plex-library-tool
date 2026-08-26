@@ -455,9 +455,14 @@ TV_SHARE_KEYWORDS = ("tv", "show", "series")
 
 
 def infer_media_type(share):
-    name = Path(share).name.lower()
-    is_movie = any(k in name for k in MOVIE_SHARE_KEYWORDS)
-    is_tv = any(k in name for k in TV_SHARE_KEYWORDS)
+    path = Path(share)
+    candidates = [path.name]
+    if path.parent != path:
+        candidates.append(path.parent.name)
+    candidates = [c.lower() for c in candidates if c]
+
+    is_movie = any(any(k in c for k in MOVIE_SHARE_KEYWORDS) for c in candidates)
+    is_tv = any(any(k in c for k in TV_SHARE_KEYWORDS) for c in candidates)
     if is_movie and not is_tv:
         return "movie"
     if is_tv and not is_movie:
