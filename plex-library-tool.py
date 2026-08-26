@@ -1343,6 +1343,14 @@ LANGUAGE_ALIAS_TO_CODE = {
 SUBTITLE_DESCRIPTOR_WORDS = {"forced", "sdh", "cc", "full", "commentary"}
 
 
+def subtitle_descriptor_from_name(name):
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    segments = [s.lower() for s in re.split(r'[._\-\s]+', stem) if s]
+    if segments and segments[-1] in SUBTITLE_DESCRIPTOR_WORDS:
+        return segments[-1]
+    return None
+
+
 def language_tag_from_name(name):
     stem = name.rsplit(".", 1)[0] if "." in name else name
     segments = [s.lower() for s in re.split(r'[._\-\s]+', stem) if s]
@@ -1444,11 +1452,21 @@ def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
     canonical = {}
     for ext, items in by_ext.items():
         detected = {i: resolve_subtitle_language(i) for i in items}
-        chosen = next((i for i in items if detected[i] == primary_lang), None)
-        if chosen is None:
-            chosen = next((i for i in items if detected[i] is None), None)
-        if chosen:
-            canonical[chosen] = subtitle_file_name(new_stem, ext.lstrip("."), primary_lang)
+        group = [i for i in items if detected[i] == primary_lang]
+        if not group:
+            fallback = next((i for i in items if detected[i] is None), None)
+            if fallback:
+                group = [fallback]
+
+        used_names = set()
+        for item in group:
+            descriptor = subtitle_descriptor_from_name(item.name) if len(group) > 1 else None
+            lang_tag = f"{primary_lang}.{descriptor}" if descriptor else primary_lang
+            name = subtitle_file_name(new_stem, ext.lstrip("."), lang_tag)
+            if name in used_names:
+                continue
+            used_names.add(name)
+            canonical[item] = name
 
     pairs = []
     for item in subtitles:
@@ -1481,6 +1499,13 @@ def unique_destination(dest):
         counter += 1
 
 
+def is_already_disambiguated(item, dest):
+    if item.parent != dest.parent or item.suffix.lower() != dest.suffix.lower():
+        return False
+    pattern = re.compile(r'^' + re.escape(dest.stem) + r' \(\d+\)$', re.IGNORECASE)
+    return bool(pattern.match(item.stem))
+
+
 def rename_consolidated_subtitles(subtitles, new_video_path, log):
     renamed = 0
     source_dirs = set()
@@ -1488,6 +1513,8 @@ def rename_consolidated_subtitles(subtitles, new_video_path, log):
         if dest == item:
             continue
         if dest.exists() and not same_existing_path(dest, item):
+            if is_already_disambiguated(item, dest):
+                continue
             dest = unique_destination(dest)
         dest.parent.mkdir(exist_ok=True)
         source_dir = item.parent
