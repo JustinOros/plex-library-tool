@@ -773,9 +773,9 @@ def confirm_delete_choice(prompt):
 JUNK_TOKENS = {
     "bluray", "blueray", "bdrip", "brrip", "bdremux", "remux",
     "webrip", "webdl", "web", "dl", "hdtv", "hdrip", "dvdrip", "dvd",
-    "hevc", "x264", "x265", "h264", "h265", "avc",
+    "hevc", "x264", "x265", "h264", "h265", "avc", "xvid", "divx",
     "aac", "ac3", "eac3", "dts", "atmos", "ddp", "dd",
-    "proper", "repack", "extended", "unrated", "uncut", "directors", "cut",
+    "proper", "repack", "extended", "unrated", "uncut", "director", "directors", "cut",
     "internal", "limited", "theatrical", "multi", "dual", "audio",
     "hdr", "sdr", "4k", "uhd", "10bit", "8bit", "hi10p", "hi444pp",
     "deluxe", "boxset", "box", "set", "extras", "hd",
@@ -1671,6 +1671,114 @@ def infer_season_from_files(folder):
     return None
 
 
+def find_matching_episode_video(target_season_dir, episode):
+    for vid in list_video_files(target_season_dir):
+        v_se = parse_season_episode(vid.name)
+        v_episode = v_se[1] if v_se else parse_episode_only(vid.name)
+        if v_episode == episode:
+            return vid
+    return None
+
+
+def find_subtitle_pack_folder(container_folder):
+    canonical_name = subtitle_folder_name()
+    try:
+        for entry in sorted(container_folder.iterdir()):
+            if entry.is_dir() and (entry.name == canonical_name or entry.name.lower() in SUBTITLE_FOLDER_NAMES):
+                return entry
+    except OSError:
+        pass
+    return None
+
+
+def resolve_subtitle_pack_episode(pack_name, fallback_season):
+    se = parse_season_episode(pack_name)
+    if se:
+        return se[0], se[1]
+    return parse_season_only(pack_name) or fallback_season, parse_episode_only(pack_name)
+
+
+def merge_orphaned_subtitle_packs(container_folder, target_folder, season, log):
+    moved = 0
+    subs_folder = find_subtitle_pack_folder(container_folder)
+    if subs_folder is None:
+        return moved
+
+    for pack in sorted(p for p in subs_folder.iterdir() if p.is_dir()):
+        target_season, episode = resolve_subtitle_pack_episode(pack.name, season)
+        if episode is None:
+            print(f"Skipping subtitle pack (no episode number found): {pack.name}")
+            continue
+        if target_season is None:
+            print(f"Skipping subtitle pack (unknown season): {pack.name}")
+            continue
+
+        target_season_dir = target_folder / season_folder_name(target_season)
+        if not target_season_dir.is_dir():
+            print(f"Skipping subtitle pack (no matching season in library): {pack.name}")
+            continue
+
+        video_match = find_matching_episode_video(target_season_dir, episode)
+        if video_match is None:
+            print(f"Skipping subtitle pack (no matching episode in library): {pack.name}")
+            continue
+
+        subtitle_files = [
+            f for f in sorted(pack.rglob("*"))
+            if f.is_file() and f.suffix.lower().lstrip(".") in SUBTITLE_EXTENSIONS
+        ]
+        if not subtitle_files:
+            continue
+
+        moved += rename_consolidated_subtitles(subtitle_files, video_match, log)
+
+        try:
+            for leftover in sorted(pack.rglob("*"), reverse=True):
+                if leftover.is_dir() and not any(leftover.iterdir()):
+                    leftover.rmdir()
+            if pack.exists() and not any(pack.iterdir()):
+                pack.rmdir()
+        except OSError:
+            pass
+
+    try:
+        if subs_folder.exists() and not any(subs_folder.iterdir()):
+            subs_folder.rmdir()
+            print(f"Removed empty folder: {subs_folder}")
+    except OSError:
+        pass
+
+    return moved
+
+
+def preview_orphaned_subtitle_packs(container_folder, target_folder, season):
+    subs_folder = find_subtitle_pack_folder(container_folder)
+    if subs_folder is None:
+        return
+
+    for pack in sorted(p for p in subs_folder.iterdir() if p.is_dir()):
+        target_season, episode = resolve_subtitle_pack_episode(pack.name, season)
+        if episode is None or target_season is None:
+            continue
+
+        target_season_dir = target_folder / season_folder_name(target_season)
+        if not target_season_dir.is_dir():
+            continue
+
+        video_match = find_matching_episode_video(target_season_dir, episode)
+        if video_match is None:
+            continue
+
+        subtitle_files = [
+            f for f in sorted(pack.rglob("*"))
+            if f.is_file() and f.suffix.lower().lstrip(".") in SUBTITLE_EXTENSIONS
+        ]
+        if not subtitle_files:
+            continue
+
+        preview_consolidated_subtitles(subtitle_files, video_match)
+
+
 def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_name, log):
     moved = 0
     skipped = 0
@@ -1709,6 +1817,8 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
             print(f"Moved: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
             moved += 1
             moved += rename_consolidated_subtitles(subtitles, dest, log)
+
+        moved += merge_orphaned_subtitle_packs(sub, target_folder, season, log)
 
         try:
             if sub.exists() and not any(sub.iterdir()):
@@ -1754,6 +1864,8 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
         moved += 1
         moved += rename_consolidated_subtitles(subtitles, dest, log)
 
+    moved += merge_orphaned_subtitle_packs(source_folder, target_folder, folder_season, log)
+
     try:
         if source_folder.exists() and not any(source_folder.iterdir()):
             source_folder.rmdir()
@@ -1786,6 +1898,8 @@ def preview_merge_duplicate_show_folder(source_folder, target_folder, raw_name, 
             print(f"Move: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
             preview_consolidated_subtitles(subtitles, dest)
 
+        preview_orphaned_subtitle_packs(sub, target_folder, season)
+
     folder_season = parse_season_folder_name(raw_name)
     if folder_season is None:
         folder_season = infer_season_from_files(source_folder)
@@ -1807,6 +1921,8 @@ def preview_merge_duplicate_show_folder(source_folder, target_folder, raw_name, 
         dest = target_folder / item_season_folder / new_name
         print(f"Move: {item.name} -> {target_folder.name}/{item_season_folder}/{new_name}")
         preview_consolidated_subtitles(subtitles, dest)
+
+    preview_orphaned_subtitle_packs(source_folder, target_folder, folder_season)
 
 
 def preview_video_files(folder, media_type, final_name, api_key, tmdb_id=None):
