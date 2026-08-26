@@ -1489,8 +1489,12 @@ def detect_sdh_from_content(path):
             cue_lines += 1
 
     if dialogue_lines < 5:
+        vprint(f"    {path.name}: only {dialogue_lines} dialogue line(s), too little to classify as SDH")
         return False
-    return (cue_lines / dialogue_lines) >= 0.15
+
+    is_sdh = cue_lines >= 3 or (cue_lines / dialogue_lines) >= 0.15
+    vprint(f"    {path.name}: {cue_lines}/{dialogue_lines} line(s) have sound cues -> SDH={is_sdh}")
+    return is_sdh
 
 
 def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
