@@ -1489,32 +1489,48 @@ def gather_video_subtitles(video_path, multi):
 
 SDH_CUE_PATTERN = re.compile(r'[\[\(][A-Za-z][^\]\)]{1,40}[\]\)]')
 
+FORCED_LINE_RATIO_THRESHOLD = 0.4
+FORCED_MIN_MAX_LINES = 10
 
-def detect_sdh_from_content(path):
+
+def read_subtitle_text(path):
     try:
         raw = path.read_bytes()
     except OSError:
-        return False
-
-    text = None
+        return None
     for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
         try:
-            text = raw.decode(encoding)
-            break
+            return raw.decode(encoding)
         except (UnicodeDecodeError, LookupError):
             continue
-    if text is None:
-        return False
+    return None
 
-    dialogue_lines = 0
-    cue_lines = 0
+
+def subtitle_dialogue_lines(text):
+    lines = []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.isdigit() or "-->" in line:
             continue
-        dialogue_lines += 1
-        if SDH_CUE_PATTERN.search(line):
-            cue_lines += 1
+        lines.append(line)
+    return lines
+
+
+def count_subtitle_dialogue_lines(path):
+    text = read_subtitle_text(path)
+    if text is None:
+        return 0
+    return len(subtitle_dialogue_lines(text))
+
+
+def detect_sdh_from_content(path):
+    text = read_subtitle_text(path)
+    if text is None:
+        return False
+
+    lines = subtitle_dialogue_lines(text)
+    dialogue_lines = len(lines)
+    cue_lines = sum(1 for line in lines if SDH_CUE_PATTERN.search(line))
 
     if dialogue_lines < 5:
         vprint(f"    {path.name}: only {dialogue_lines} dialogue line(s), too little to classify as SDH")
@@ -1543,13 +1559,27 @@ def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
             if fallback:
                 group = [fallback]
 
-        used_names = set()
-        for item in group:
-            descriptor = None
-            if len(group) > 1:
+        descriptors = {}
+        if len(group) > 1:
+            for item in group:
                 descriptor = subtitle_descriptor_from_name(item.name)
                 if descriptor is None and detect_sdh_from_content(item):
                     descriptor = "sdh"
+                descriptors[item] = descriptor
+
+            undecided = [i for i in group if descriptors[i] is None]
+            if len(undecided) > 1:
+                line_counts = {i: count_subtitle_dialogue_lines(i) for i in undecided}
+                max_lines = max(line_counts.values())
+                if max_lines >= FORCED_MIN_MAX_LINES:
+                    for i in undecided:
+                        if 0 < line_counts[i] <= max_lines * FORCED_LINE_RATIO_THRESHOLD:
+                            vprint(f"    {i.name}: {line_counts[i]}/{max_lines} line(s) vs longest track -> forced")
+                            descriptors[i] = "forced"
+
+        used_names = set()
+        for item in group:
+            descriptor = descriptors.get(item)
             lang_tag = f"{primary_lang}.{descriptor}" if descriptor else primary_lang
             name = subtitle_file_name(new_stem, ext.lstrip("."), lang_tag)
             if name in used_names:
