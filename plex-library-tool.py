@@ -1645,6 +1645,8 @@ def preview_season_folder_files(folder, final_name, api_key=None, tmdb_id=None):
             else:
                 preview_consolidated_subtitles(subtitles, item)
 
+    preview_orphaned_subtitle_packs(folder, folder, None)
+
 
 def rename_season_folder_files(folder, final_name, log, api_key=None, tmdb_id=None):
     renamed = 0
@@ -1697,6 +1699,8 @@ def rename_season_folder_files(folder, final_name, log, api_key=None, tmdb_id=No
                 print(f"Renamed file: {item.name} -> {new_name}")
             renamed += 1
             renamed += rename_consolidated_subtitles(subtitles, dest, log)
+
+    renamed += merge_orphaned_subtitle_packs(folder, folder, None, log)
 
     return renamed, skipped
 
