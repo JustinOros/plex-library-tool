@@ -470,7 +470,21 @@ def infer_media_type(share):
     return None
 
 
-def determine_media_type(share):
+def normalize_media_type_arg(value):
+    v = value.strip().lower().replace(" ", "").replace("-", "").replace("_", "")
+    if v in ("m", "movie", "movies", "film", "films"):
+        return "movie"
+    if v in ("t", "tv", "tvshow", "tvshows", "show", "shows", "series"):
+        return "tv"
+    raise argparse.ArgumentTypeError(f"Invalid type: {value!r}. Use 'movies' or 'tv'.")
+
+
+def determine_media_type(share, override=None):
+    if override:
+        label = "Movies" if override == "movie" else "TV Shows"
+        print(f"Using library type from --type: {label}")
+        return override
+
     inferred = infer_media_type(share)
     if inferred:
         label = "Movies" if inferred == "movie" else "TV Shows"
@@ -2847,7 +2861,7 @@ def run_scan(args, log):
         baseline = {}
     vprint(f"Baseline has {len(baseline)} folder(s) recorded")
 
-    media_type = determine_media_type(share)
+    media_type = determine_media_type(share, getattr(args, "type", None))
 
     print()
     print("Performing action: Rename")
@@ -3117,7 +3131,8 @@ def run_episode_check(args):
     path_arg = args.episodes if isinstance(args.episodes, str) else None
     share = resolve_share(path_arg)
 
-    if infer_media_type(share) == "movie":
+    media_type = getattr(args, "type", None) or infer_media_type(share)
+    if media_type == "movie":
         print("This looks like a Movies share. --episodes only checks TV show libraries.")
         return
 
@@ -3395,6 +3410,12 @@ def build_parser():
         help="Check TV show folders against TMDb's episode list and report any missing (already-aired) episodes. "
              "Read-only, makes no changes. Optionally pass a path to skip the share-selection prompt."
     )
+    parser.add_argument(
+        "-T", "--type",
+        type=normalize_media_type_arg, default=None, metavar="movies|tv",
+        help="Manually specify the library type (movies or tv) instead of auto-detecting from the share name "
+             "or prompting."
+    )
     return parser
 
 
@@ -3436,7 +3457,7 @@ def main():
         other_args_used = (
             args.yes or args.force or args.verbose or args.test is not None
             or args.rename or args.manual_rename or args.restore
-            or args.backup or args.cleanup or args.episodes
+            or args.backup or args.cleanup or args.episodes or args.type
         )
         if other_args_used:
             print("--undo cannot be combined with any other argument.")
