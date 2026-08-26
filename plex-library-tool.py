@@ -1468,6 +1468,19 @@ def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
     return pairs
 
 
+def unique_destination(dest):
+    if not dest.exists():
+        return dest
+    stem = dest.stem
+    ext = dest.suffix
+    counter = 2
+    while True:
+        candidate = dest.parent / f"{stem} ({counter}){ext}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 def rename_consolidated_subtitles(subtitles, new_video_path, log):
     renamed = 0
     source_dirs = set()
@@ -1475,8 +1488,7 @@ def rename_consolidated_subtitles(subtitles, new_video_path, log):
         if dest == item:
             continue
         if dest.exists() and not same_existing_path(dest, item):
-            print(f"Skipping subtitle (target already exists): {item.name}")
-            continue
+            dest = unique_destination(dest)
         dest.parent.mkdir(exist_ok=True)
         source_dir = item.parent
         ok, err = safe_rename(item, dest)
