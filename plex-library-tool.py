@@ -45,6 +45,34 @@ VIDEO_EXTENSIONS = {
 SUBTITLE_EXTENSIONS = {"srt", "sub"}
 SUBTITLE_FOLDER_NAMES = {"subs", "subtitles"}
 
+IGNORABLE_JUNK_FILENAMES = {".ds_store", "thumbs.db", "desktop.ini", ".localized"}
+
+
+def is_ignorable_junk_file(path):
+    name = path.name.lower()
+    return name in IGNORABLE_JUNK_FILENAMES or name.startswith("._")
+
+
+def purge_ignorable_junk(folder):
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.is_file() and is_ignorable_junk_file(entry):
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+
+
+def is_effectively_empty(folder):
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return False
+    return all(entry.is_file() and is_ignorable_junk_file(entry) for entry in entries)
+
 SEASON_EP_PATTERNS = [
     (re.compile(r'[Ss](\d{1,2})[Ee](\d{1,2})'), 'E'),
     (re.compile(r'[Ss](\d{1,2})[Xx](\d{1,2})'), 'X'),
@@ -1595,7 +1623,8 @@ def rename_consolidated_subtitles(subtitles, new_video_path, log):
 
     for source_dir in source_dirs:
         try:
-            if source_dir.exists() and not any(source_dir.iterdir()):
+            if source_dir.exists() and is_effectively_empty(source_dir):
+                purge_ignorable_junk(source_dir)
                 source_dir.rmdir()
                 print(f"Removed empty folder: {source_dir}")
         except OSError:
@@ -1881,15 +1910,18 @@ def merge_orphaned_subtitle_packs(container_folder, target_folder, season, log):
 
         try:
             for leftover in sorted(pack.rglob("*"), reverse=True):
-                if leftover.is_dir() and not any(leftover.iterdir()):
+                if leftover.is_dir() and is_effectively_empty(leftover):
+                    purge_ignorable_junk(leftover)
                     leftover.rmdir()
-            if pack.exists() and not any(pack.iterdir()):
+            if pack.exists() and is_effectively_empty(pack):
+                purge_ignorable_junk(pack)
                 pack.rmdir()
         except OSError:
             pass
 
     try:
-        if subs_folder.exists() and not any(subs_folder.iterdir()):
+        if subs_folder.exists() and is_effectively_empty(subs_folder):
+            purge_ignorable_junk(subs_folder)
             subs_folder.rmdir()
             print(f"Removed empty folder: {subs_folder}")
     except OSError:
@@ -1968,7 +2000,8 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
         moved += merge_orphaned_subtitle_packs(sub, target_folder, season, log)
 
         try:
-            if sub.exists() and not any(sub.iterdir()):
+            if sub.exists() and is_effectively_empty(sub):
+                purge_ignorable_junk(sub)
                 sub.rmdir()
         except OSError:
             pass
@@ -2014,7 +2047,8 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
     moved += merge_orphaned_subtitle_packs(source_folder, target_folder, folder_season, log)
 
     try:
-        if source_folder.exists() and not any(source_folder.iterdir()):
+        if source_folder.exists() and is_effectively_empty(source_folder):
+            purge_ignorable_junk(source_folder)
             source_folder.rmdir()
             print(f"Removed empty folder: {source_folder}")
     except OSError:
@@ -2543,7 +2577,10 @@ def remove_empty_folders(share, confirm_all, dry_run=False):
         if root_path.resolve() == share_path:
             continue
         try:
-            remaining = [c for c in root_path.iterdir() if c not in removed_paths]
+            remaining = [
+                c for c in root_path.iterdir()
+                if c not in removed_paths and not (c.is_file() and is_ignorable_junk_file(c))
+            ]
         except OSError as e:
             vprint(f"  Could not read {root_path}: {e}")
             continue
@@ -2566,6 +2603,7 @@ def remove_empty_folders(share, confirm_all, dry_run=False):
                 continue
 
         try:
+            purge_ignorable_junk(root_path)
             root_path.rmdir()
             print(f"Removed empty folder: {root_path}")
             removed_paths.add(root_path)
@@ -3383,7 +3421,8 @@ def run_restore(log_arg):
 
         parent = src.parent
         try:
-            if parent.exists() and not any(parent.iterdir()):
+            if parent.exists() and is_effectively_empty(parent):
+                purge_ignorable_junk(parent)
                 parent.rmdir()
                 print(f"Removed empty folder: {parent}")
         except OSError:
