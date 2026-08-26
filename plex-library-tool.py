@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import ctypes
 import datetime
+import difflib
 import fnmatch
 import hashlib
 import json
@@ -736,6 +737,33 @@ def best_match(media_type, results, year, query=None):
     return results[0]
 
 
+FUZZY_TITLE_MATCH_THRESHOLD = 0.85
+
+
+def fuzzy_title_match(media_type, results, query, year):
+    if not query or not results or not year:
+        return None
+
+    query_norm = clean_and_squeeze(query).lower()
+    best = None
+    best_ratio = 0.0
+
+    for r in results:
+        if result_year(media_type, r) != year:
+            continue
+        title_norm = clean_and_squeeze(result_title(media_type, r) or "").lower()
+        if not title_norm:
+            continue
+        ratio = difflib.SequenceMatcher(None, query_norm, title_norm).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best = r
+
+    if best is not None and best_ratio >= FUZZY_TITLE_MATCH_THRESHOLD:
+        return best, best_ratio
+    return None
+
+
 def same_existing_path(dest, src):
     try:
         return dest.exists() and src.exists() and dest.samefile(src)
@@ -1108,6 +1136,21 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
                     match = hyphen_match
                     results = hyphen_results
                     query = hyphen_query
+
+    if not match and year:
+        words = query.split()
+        if len(words) > 1:
+            broadened_query = " ".join(words[:-1])
+            vprint(f"  No match, retrying with broadened query (possible title typo): query={broadened_query!r}")
+            broad_results, broad_err = tmdb_search(api_key, media_type, broadened_query)
+            if not broad_err:
+                vprint(f"  TMDb returned {len(broad_results)} result(s)")
+                fuzzy = fuzzy_title_match(media_type, broad_results, query, year)
+                if fuzzy:
+                    fuzzy_match, ratio = fuzzy
+                    vprint(f"  Fuzzy title match: {result_title(media_type, fuzzy_match)!r} (ratio={ratio:.2f}, id={fuzzy_match.get('id')})")
+                    match = fuzzy_match
+                    results = broad_results
 
     if not match:
         return None, None, None, f"No match found (Ignoring): {raw_name}"
