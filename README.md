@@ -170,7 +170,9 @@ python plex-library-tool.py --service start               # start using the curr
 python plex-library-tool.py --service stop                # stop the service
 ```
 
-Each cycle runs the equivalent of `-rcy` (rename + cleanup, no prompts) on every configured share. It runs as a detached background process, so it keeps running after you close the terminal. Progress is written to `logs/service.log` instead of the screen. Settings (shares + interval) are stored in `service.json` next to the script; you can add more shares later by running `--service <path>` again while it's running, no need to stop it first.
+Each cycle runs the equivalent of `-rcy` (rename + cleanup, no prompts) on every configured share. It runs as a detached background process, so it keeps running after you close the terminal, at a lowered OS priority so it yields to things like Plex during playback. Progress is written to `logs/service.log` instead of the screen. Settings (shares + interval) are stored in `service.json` next to the script; you can add more shares later by running `--service <path>` again while it's running, no need to stop it first.
+
+Both rename and cleanup skip folders that haven't changed since the last pass, so most cycles do little more than a quick unchanged-folder check rather than a full rescan.
 
 The service reuses your saved TMDb API key and language from `.env`, so run the script normally at least once first if you haven't already.
 

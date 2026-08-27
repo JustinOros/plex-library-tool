@@ -2445,6 +2445,19 @@ def save_scan_cache(cache):
     CACHE_FILE.write_text(json.dumps(cache, indent=2))
 
 
+def compute_cleanup_rules_signature(delete_folder_names, delete_file_patterns, keep_languages, delete_languages):
+    hasher = hashlib.sha256()
+    for name in sorted(delete_folder_names):
+        hasher.update(f"f:{name.lower()}\n".encode("utf-8"))
+    for pattern in sorted(delete_file_patterns):
+        hasher.update(f"p:{pattern.lower()}\n".encode("utf-8"))
+    for lang in sorted(keep_languages or []):
+        hasher.update(f"k:{lang}\n".encode("utf-8"))
+    for lang in sorted(delete_languages or []):
+        hasher.update(f"d:{lang}\n".encode("utf-8"))
+    return hasher.hexdigest()
+
+
 def parse_simple_yaml_list(path, key):
     if not path.exists():
         return []
@@ -2636,16 +2649,13 @@ def detect_srt_language(path):
     scores = {lang: sum(1 for w in words if w in stopwords) for lang, stopwords in SUBTITLE_STOPWORDS.items()}
     best_lang = max(scores, key=scores.get)
     best_score = scores[best_lang]
-    en_score = scores.get("en", 0)
+    second_score = max((s for lang, s in scores.items() if lang != best_lang), default=0)
     vprint(f"    {path.name}: word count={total}, scores={scores}")
 
-    if best_lang == "en":
-        vprint(f"    {path.name}: classified as en")
-        return "en"
-    if best_score >= 5 and best_score >= en_score * 1.5 and best_score >= en_score + 3:
-        vprint(f"    {path.name}: classified as {best_lang} (en_score={en_score}, {best_lang}_score={best_score})")
+    if best_score >= 5 and best_score >= second_score * 1.5 and best_score >= second_score + 3:
+        vprint(f"    {path.name}: classified as {best_lang} (second_score={second_score}, {best_lang}_score={best_score})")
         return best_lang
-    vprint(f"    {path.name}: inconclusive (en_score={en_score}, best={best_lang}:{best_score}) -> unknown")
+    vprint(f"    {path.name}: inconclusive (best={best_lang}:{best_score}, second={second_score}) -> unknown")
     return "unknown"
 
 
@@ -2693,10 +2703,12 @@ def matches_file_name(name, patterns, path=None):
     return True
 
 
-def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_languages=None, delete_languages=None):
+def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_languages=None, delete_languages=None, unchanged_folder_names=None):
     targets = []
     keep_languages = keep_languages or set()
     delete_languages = delete_languages or set()
+    unchanged_folder_names = unchanged_folder_names or set()
+    share_root = Path(share)
 
     def walk(folder):
         vprint(f"Scanning folder: {folder}")
@@ -2710,6 +2722,9 @@ def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_
                 if matches_folder_name(entry.name, delete_folder_names):
                     vprint(f"  Match (folder name): {entry}")
                     targets.append(("folder", entry))
+                    continue
+                if entry.parent == share_root and entry.name in unchanged_folder_names:
+                    vprint(f"  Unchanged since last cleanup, skipping: {entry}")
                     continue
                 vprint(f"  No match, descending into: {entry}")
                 walk(entry)
@@ -2803,11 +2818,41 @@ def run_cleanup(args, log):
         print(f"Edit {DELETE_FILE.name} to enable cleanup.")
         return
 
+    rules_signature = compute_cleanup_rules_signature(
+        delete_folder_names, delete_file_patterns, keep_languages, delete_languages
+    )
+    cache = load_scan_cache()
+    share_key = str(Path(share).resolve())
+    cleanup_cache_key = f"cleanup::{share_key}"
+    cleanup_baseline = cache.get(cleanup_cache_key)
+    if not isinstance(cleanup_baseline, dict):
+        cleanup_baseline = {}
+
+    share_path = Path(share)
+    try:
+        top_level_folders = [
+            p for p in share_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+        ]
+    except OSError:
+        top_level_folders = []
+
+    unchanged_folder_names = set()
+    if not getattr(args, "force", False):
+        for folder in top_level_folders:
+            sig = compute_folder_signature(folder)
+            combined = f"{sig}|{rules_signature}"
+            if cleanup_baseline.get(folder.name) == combined:
+                unchanged_folder_names.add(folder.name)
+        if unchanged_folder_names:
+            vprint(f"Skipping content scan for {len(unchanged_folder_names)} unchanged folder(s)")
+
     print()
     print(f"Scanning: {share}")
     print()
 
-    targets = find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_languages, delete_languages)
+    targets = find_cleanup_targets(
+        share, delete_folder_names, delete_file_patterns, keep_languages, delete_languages, unchanged_folder_names
+    )
     vprint(f"Scan complete. {len(targets)} item(s) matched.")
 
     test_mode = args.test is not None
@@ -2887,6 +2932,18 @@ def run_cleanup(args, log):
 
     folders_deleted = moved_folders + empty_removed
     folders_deleted_skipped = skipped_folders + empty_skipped
+
+    new_cleanup_baseline = {}
+    for folder in top_level_folders:
+        if folder.name in unchanged_folder_names:
+            new_cleanup_baseline[folder.name] = cleanup_baseline.get(folder.name)
+            continue
+        if not folder.exists():
+            continue
+        sig = compute_folder_signature(folder)
+        new_cleanup_baseline[folder.name] = f"{sig}|{rules_signature}"
+    cache[cleanup_cache_key] = new_cleanup_baseline
+    save_scan_cache(cache)
 
     if not targets and not folders_deleted and not moved_files and not folders_deleted_skipped and not skipped_files:
         print("Nothing to clean up.")
@@ -4028,6 +4085,18 @@ def run_service_pass(path_str, media_type):
     run_cleanup(args, log)
 
 
+def lower_process_priority():
+    try:
+        if platform.system() == "Windows":
+            BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.kernel32.SetPriorityClass(handle, BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            os.nice(10)
+    except (AttributeError, OSError):
+        pass
+
+
 def run_service_worker():
     global VERBOSE
     VERBOSE = False
@@ -4035,6 +4104,7 @@ def run_service_worker():
     def ts():
         return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    lower_process_priority()
     print(f"[{ts()}] Service worker started (PID {os.getpid()}).")
     sys.stdout.flush()
 
