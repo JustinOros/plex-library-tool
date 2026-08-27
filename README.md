@@ -164,7 +164,7 @@ Instead of running the script by hand every time you add something, `--service` 
 
 ```
 python plex-library-tool.py --service                    # pick share(s) interactively, then start
-python plex-library-tool.py --service "/Volumes/Movies"  # add a share and start (default: every 60s)
+python plex-library-tool.py --service "/Volumes/Movies"  # add a share and start (default: every 5 minutes)
 python plex-library-tool.py --service 120                # set the interval to 120 seconds and start
 python plex-library-tool.py --service start               # start using the current configuration
 python plex-library-tool.py --service stop                # stop the service

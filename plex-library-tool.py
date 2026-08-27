@@ -33,7 +33,7 @@ NAMES_FILE = SCRIPT_DIR / "names.yaml"
 CLEANUP_TRASH_DIR = SCRIPT_DIR / ".trash"
 SERVICE_CONFIG_FILE = SCRIPT_DIR / "service.json"
 SERVICE_LOG_FILE = LOG_DIR / "service.log"
-DEFAULT_SERVICE_INTERVAL = 60
+DEFAULT_SERVICE_INTERVAL = 300
 
 VERBOSE = False
 
@@ -4040,6 +4040,12 @@ def handle_service_command(value):
         config = load_service_config()
         config["interval"] = interval
         save_service_config(config)
+
+        existing_pid = config.get("pid")
+        if existing_pid and is_process_running(existing_pid):
+            print(f"Interval updated to {interval}s. The running service (PID {existing_pid}) will pick it up on its next cycle.")
+            return
+
         if not config.get("paths"):
             print(f"Interval set to {interval}s. No shares configured yet.")
             interactive_configure_service()
