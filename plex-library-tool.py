@@ -12,8 +12,10 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -29,6 +31,9 @@ TMDB_BASE = "https://api.themoviedb.org/3"
 DELETE_FILE = SCRIPT_DIR / "delete.yaml"
 NAMES_FILE = SCRIPT_DIR / "names.yaml"
 CLEANUP_TRASH_DIR = SCRIPT_DIR / ".trash"
+SERVICE_CONFIG_FILE = SCRIPT_DIR / "service.json"
+SERVICE_LOG_FILE = LOG_DIR / "service.log"
+DEFAULT_SERVICE_INTERVAL = 60
 
 VERBOSE = False
 
@@ -46,6 +51,34 @@ SUBTITLE_EXTENSIONS = {"srt", "sub"}
 SUBTITLE_FOLDER_NAMES = {"subs", "subtitles"}
 
 IGNORABLE_JUNK_FILENAMES = {".ds_store", "thumbs.db", "desktop.ini", ".localized"}
+
+FILE_STABILITY_AGE_THRESHOLD = 30
+FILE_STABILITY_WAIT_SECONDS = 2
+
+
+def is_file_stable(path):
+    try:
+        stat1 = path.stat()
+    except OSError:
+        return False
+
+    age = time.time() - stat1.st_mtime
+    if age > FILE_STABILITY_AGE_THRESHOLD:
+        return True
+
+    vprint(f"  {path.name}: modified {age:.0f}s ago, checking if still being written")
+    size1 = stat1.st_size
+    time.sleep(FILE_STABILITY_WAIT_SECONDS)
+
+    try:
+        stat2 = path.stat()
+    except OSError:
+        return False
+
+    stable = stat2.st_size == size1
+    if not stable:
+        vprint(f"  {path.name}: size changed ({size1} -> {stat2.st_size}), still being written")
+    return stable
 
 
 def is_ignorable_junk_file(path):
@@ -1409,12 +1442,20 @@ def subtitle_descriptor_from_name(name):
 def language_tag_from_name(name):
     stem = name.rsplit(".", 1)[0] if "." in name else name
     segments = [s.lower() for s in re.split(r'[._\-\s]+', stem) if s]
-    if len(segments) < 2:
+    if not segments:
         return None
 
     trimmed = list(segments)
     while len(trimmed) > 1 and trimmed[-1] in SUBTITLE_DESCRIPTOR_WORDS:
         trimmed.pop()
+
+    if len(segments) == 1:
+        only = trimmed[-1] if trimmed else None
+        if only in ENGLISH_LANGUAGE_TOKENS:
+            return "en"
+        if only in OTHER_LANGUAGE_TOKENS_RELIABLE:
+            return "foreign"
+        return None
 
     tag_window = set(segments[-2:])
     last_only = {trimmed[-1]} if trimmed else set()
@@ -1432,12 +1473,20 @@ def language_tag_from_name(name):
 def specific_language_from_name(name):
     stem = name.rsplit(".", 1)[0] if "." in name else name
     segments = [s.lower() for s in re.split(r'[._\-\s]+', stem) if s]
-    if len(segments) < 2:
+    if not segments:
         return None
 
     trimmed = list(segments)
     while len(trimmed) > 1 and trimmed[-1] in SUBTITLE_DESCRIPTOR_WORDS:
         trimmed.pop()
+
+    if len(segments) == 1:
+        only = trimmed[-1] if trimmed else None
+        if only in ENGLISH_LANGUAGE_TOKENS:
+            return "en"
+        if only in OTHER_LANGUAGE_TOKENS_RELIABLE:
+            return LANGUAGE_ALIAS_TO_CODE.get(only)
+        return None
 
     tag_window = segments[-2:]
     last_only = trimmed[-1] if trimmed else None
@@ -1885,6 +1934,11 @@ def rename_season_folder_files(folder, final_name, log, api_key=None, tmdb_id=No
         organize_subtitle_folder(sub, log)
 
         for item in list_video_files(sub):
+            if not is_file_stable(item):
+                print(f"Skipping (still being copied): {item.name}")
+                skipped += 1
+                continue
+
             ext = item.suffix.lower().lstrip(".")
             file_season, episode, marker = resolve_season_folder_file(item, season, api_key, tmdb_id)
             target_season = file_season if file_season is not None else season
@@ -2066,6 +2120,11 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
         organize_subtitle_folder(sub, log)
 
         for item in list_video_files(sub):
+            if not is_file_stable(item):
+                print(f"Skipping (still being copied): {item.name}")
+                skipped += 1
+                continue
+
             ext = item.suffix.lower().lstrip(".")
             file_season, episode, marker = resolve_season_folder_file(item, season)
             item_season = file_season if file_season is not None else season
@@ -2109,6 +2168,11 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
     organize_subtitle_folder(source_folder, log)
 
     for item in list_video_files(source_folder):
+        if not is_file_stable(item):
+            print(f"Skipping (still being copied): {item.name}")
+            skipped += 1
+            continue
+
         ext = item.suffix.lower().lstrip(".")
         file_season, episode, marker = resolve_season_folder_file(item, folder_season)
         item_season = file_season if file_season is not None else folder_season
@@ -2267,6 +2331,11 @@ def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=Non
         organize_subtitle_folder(folder, log)
         multi = len(files) > 1
         for item in files:
+            if not is_file_stable(item):
+                print(f"Skipping (still being copied): {item.name}")
+                skipped += 1
+                continue
+
             ext = item.suffix.lower().lstrip(".")
             name = final_name
             if multi:
@@ -2298,6 +2367,11 @@ def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=Non
         return renamed, skipped
 
     for item in files:
+        if not is_file_stable(item):
+            print(f"Skipping (still being copied): {item.name}")
+            skipped += 1
+            continue
+
         ext = item.suffix.lower().lstrip(".")
         se = parse_season_episode(item.name)
         subtitles = gather_video_subtitles(item, True)
@@ -2856,6 +2930,13 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
         if test_mode and test_limit > 0 and shown >= test_limit:
             break
 
+        if not is_file_stable(item):
+            print(f"[{index}/{total}] {item.name}")
+            print(f"Skipping (still being copied): {item.name}")
+            shown += 1
+            folders_skipped += 1
+            continue
+
         print(f"[{index}/{total}] {item.name}")
         final_name, match_year, _, error = lookup_folder(api_key, "movie", item.stem)
         if error:
@@ -2923,6 +3004,13 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
     for index, item in enumerate(files, start=1):
         if test_mode and test_limit > 0 and shown >= test_limit:
             break
+
+        if not is_file_stable(item):
+            print(f"[{index}/{total}] {item.name}")
+            print(f"Skipping (still being copied): {item.name}")
+            shown += 1
+            files_skipped += 1
+            continue
 
         print(f"[{index}/{total}] {item.name}")
         final_name, match_year, match_id, error = lookup_folder(api_key, "tv", item.stem)
@@ -3651,6 +3739,19 @@ def build_parser():
         help="Manually specify the library type (movies or tv) instead of auto-detecting from the share name "
              "or prompting."
     )
+    parser.add_argument(
+        "--service",
+        nargs="?", const="", default=None, metavar="start|stop|SECONDS|PATH",
+        help="Run rename+cleanup automatically in the background on the configured share(s). "
+             "--service start starts it, --service stop stops it. --service N sets the interval "
+             "in seconds and starts it. --service PATH adds a share to the auto-scan list and "
+             "starts the service. --service with no value walks through selecting shares interactively."
+    )
+    parser.add_argument(
+        "--service-worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -3681,12 +3782,312 @@ def parse_args():
     return build_parser().parse_args(expand_bundled_flags(sys.argv[1:]))
 
 
+def get_api_key_noninteractive():
+    env_key = os.environ.get("TMDB_API_KEY")
+    if env_key:
+        return env_key.strip()
+    key = parse_env_file(API_KEY_FILE).get("TMDB_API_KEY", "").strip()
+    return key or None
+
+
+def load_service_config():
+    if SERVICE_CONFIG_FILE.exists():
+        try:
+            data = json.loads(SERVICE_CONFIG_FILE.read_text())
+            if isinstance(data, dict):
+                data.setdefault("paths", [])
+                data.setdefault("interval", DEFAULT_SERVICE_INTERVAL)
+                data.setdefault("pid", None)
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"paths": [], "interval": DEFAULT_SERVICE_INTERVAL, "pid": None}
+
+
+def save_service_config(config):
+    SERVICE_CONFIG_FILE.write_text(json.dumps(config, indent=2))
+
+
+def is_process_running(pid):
+    if not pid:
+        return False
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"],
+                capture_output=True, text=True, timeout=5
+            )
+            return str(pid) in result.stdout
+        except (subprocess.SubprocessError, OSError):
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def terminate_process(pid):
+    if platform.system() == "Windows":
+        try:
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5)
+            return True
+        except (subprocess.SubprocessError, OSError):
+            return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except OSError:
+        return False
+
+
+def stop_service():
+    config = load_service_config()
+    pid = config.get("pid")
+    if not pid or not is_process_running(pid):
+        print("Service is not running.")
+        config["pid"] = None
+        save_service_config(config)
+        return
+
+    ok = terminate_process(pid)
+    config["pid"] = None
+    save_service_config(config)
+    if ok:
+        print(f"Service stopped (PID {pid}).")
+    else:
+        print(f"Could not stop the service (PID {pid}). You may need to terminate it manually.")
+
+
+def start_service_daemon(config):
+    existing_pid = config.get("pid")
+    if existing_pid and is_process_running(existing_pid):
+        print(f"Service already running (PID {existing_pid}), interval {config.get('interval', DEFAULT_SERVICE_INTERVAL)}s.")
+        print("Stop it first with --service stop if you want to change settings and restart.")
+        return
+
+    get_api_key()
+    get_tmdb_language()
+
+    LOG_DIR.mkdir(exist_ok=True)
+    log_fh = open(SERVICE_LOG_FILE, "a")
+
+    script_path = Path(__file__).resolve()
+    cmd = [sys.executable, str(script_path), "--service-worker"]
+
+    popen_kwargs = {"stdout": log_fh, "stderr": log_fh, "stdin": subprocess.DEVNULL}
+    if platform.system() == "Windows":
+        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    log_fh.close()
+
+    config["pid"] = proc.pid
+    save_service_config(config)
+
+    interval = config.get("interval", DEFAULT_SERVICE_INTERVAL)
+    print(f"Service started (PID {proc.pid}), interval {interval}s.")
+    if config.get("paths"):
+        print("Scanning:")
+        for p in config["paths"]:
+            print(f"  {p}")
+    else:
+        print("No shares configured yet. Add one with --service <path>.")
+    print(f"Log: {SERVICE_LOG_FILE}")
+    print("Stop anytime with: --service stop")
+
+
+def interactive_configure_service():
+    config = load_service_config()
+    paths = list(config.get("paths", []))
+
+    while True:
+        mounts = [m for m in find_smb_mounts() if m not in paths]
+        if mounts:
+            print("Available shares:")
+            for i, m in enumerate(mounts, 1):
+                print(f"  {i}) {m}")
+            sel = input(f"Select a share to add [1-{len(mounts)}], type a path, or press Enter to stop adding: ").strip()
+        else:
+            sel = input("No additional SMB shares found. Type a path to add, or press Enter to stop adding: ").strip()
+
+        if not sel:
+            break
+
+        if sel.isdigit() and 1 <= int(sel) <= len(mounts):
+            chosen = mounts[int(sel) - 1]
+        else:
+            chosen = sel
+            if not Path(chosen).is_dir():
+                print(f"Path not found: {chosen}")
+                continue
+
+        if chosen not in paths:
+            paths.append(chosen)
+            print(f"Added: {chosen}")
+        else:
+            print(f"Already added: {chosen}")
+
+        again = input("Add another share? [y/N]: ").strip().lower()
+        if again != "y":
+            break
+
+    config["paths"] = paths
+    config.setdefault("interval", DEFAULT_SERVICE_INTERVAL)
+    save_service_config(config)
+
+    if not paths:
+        print("No shares configured. Service not started.")
+        return
+
+    interval = config["interval"]
+    resp = input(f"Start the service now with a {interval}s interval? [Y/n]: ").strip().lower()
+    if resp in ("", "y", "yes"):
+        start_service_daemon(config)
+    else:
+        print("Not started. Run --service start to start it later.")
+
+
+def handle_service_command(value):
+    value = value.strip()
+
+    if value == "":
+        interactive_configure_service()
+        return
+
+    if value.lower() == "stop":
+        stop_service()
+        return
+
+    if value.lower() == "start":
+        config = load_service_config()
+        if not config.get("paths"):
+            print("No shares configured yet.")
+            interactive_configure_service()
+            return
+        start_service_daemon(config)
+        return
+
+    if re.fullmatch(r'-?\d+', value):
+        interval = int(value)
+        if interval <= 0:
+            print("Interval must be a positive number of seconds. Use --service stop to stop it.")
+            sys.exit(1)
+
+        config = load_service_config()
+        config["interval"] = interval
+        save_service_config(config)
+        if not config.get("paths"):
+            print(f"Interval set to {interval}s. No shares configured yet.")
+            interactive_configure_service()
+            return
+
+        start_service_daemon(config)
+        return
+
+    path = Path(value)
+    if not path.is_dir():
+        print(f"Path not found: {value}")
+        sys.exit(1)
+
+    config = load_service_config()
+    paths = config.get("paths", [])
+    resolved = str(path.resolve())
+    if resolved not in paths:
+        paths.append(resolved)
+        config["paths"] = paths
+        print(f"Added to service scan list: {resolved}")
+    else:
+        print(f"Already in service scan list: {resolved}")
+    save_service_config(config)
+    start_service_daemon(config)
+
+
+def run_service_pass(path_str, media_type):
+    class ServiceArgs:
+        pass
+
+    args = ServiceArgs()
+    args.rename = path_str
+    args.cleanup = path_str
+    args.type = media_type
+    args.yes = True
+    args.force = False
+    args.verbose = False
+    args.test = None
+
+    log = RenameLog()
+    run_scan(args, log)
+    print()
+    run_cleanup(args, log)
+
+
+def run_service_worker():
+    global VERBOSE
+    VERBOSE = False
+
+    def ts():
+        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    print(f"[{ts()}] Service worker started (PID {os.getpid()}).")
+    sys.stdout.flush()
+
+    while True:
+        config = load_service_config()
+        paths = config.get("paths", [])
+        interval = config.get("interval", DEFAULT_SERVICE_INTERVAL)
+
+        if not paths:
+            print(f"[{ts()}] No shares configured. Waiting {interval}s.")
+
+        for path_str in paths:
+            path = Path(path_str)
+            if not path.is_dir():
+                print(f"[{ts()}] Skipping missing path: {path_str}")
+                continue
+
+            media_type = infer_media_type(path)
+            if media_type is None:
+                print(f"[{ts()}] Skipping (cannot determine movies/tv from path name): {path_str}")
+                continue
+
+            if not get_api_key_noninteractive():
+                print(f"[{ts()}] No TMDb API key configured, skipping this cycle.")
+                break
+
+            print(f"[{ts()}] Scanning: {path_str} ({media_type})")
+            try:
+                run_service_pass(path_str, media_type)
+            except SystemExit:
+                pass
+            except Exception as e:
+                print(f"[{ts()}] Error scanning {path_str}: {e}")
+            sys.stdout.flush()
+
+        sys.stdout.flush()
+        time.sleep(interval)
+
+
 def main():
     if len(sys.argv) == 1:
         build_parser().print_help()
         return
 
     args = parse_args()
+
+    if args.service_worker:
+        run_service_worker()
+        return
+
+    if args.service is not None:
+        handle_service_command(args.service)
+        return
 
     if args.undo:
         other_args_used = (

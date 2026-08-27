@@ -147,6 +147,7 @@ files:
    - "*.jpg"
    - "*.jpeg"
    - "*.png"
+   - "*.smi"
    - "*.ico"
    - "*.url"
    - "*.sfv"

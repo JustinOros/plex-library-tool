@@ -151,8 +151,28 @@ python plex-library-tool.py -r "/path/to/your/Movies" -t
 | `--backup` | Snapshot current names to a log file without changing anything. |
 | `--restore [LOGFILE]` | Undo a previous run using its log file. Pick from a list if no file is given. |
 | `-u`, `--undo` | Instantly undo the most recent run, no need to look up a log filename. Can't be combined with any other flag. |
+| `-T`, `--type movies\|tv` | Manually set the library type instead of auto-detecting or prompting. |
+| `--service [N\|PATH]` | Run rename + cleanup automatically in the background. See [Running as a service](#running-as-a-service) below. |
 
 Flags can be combined, e.g. `-rc` runs rename and cleanup back to back on the same share, `-rf` forces a full rename scan, `-ty` previews everything without prompting.
+
+---
+
+## Running as a service
+
+Instead of running the script by hand every time you add something, `--service` runs it automatically in the background, on a timer, so newly added movies/shows get renamed within a minute or two of showing up.
+
+```
+python plex-library-tool.py --service                    # pick share(s) interactively, then start
+python plex-library-tool.py --service "/Volumes/Movies"  # add a share and start (default: every 60s)
+python plex-library-tool.py --service 120                # set the interval to 120 seconds and start
+python plex-library-tool.py --service start               # start using the current configuration
+python plex-library-tool.py --service stop                # stop the service
+```
+
+Each cycle runs the equivalent of `-rcy` (rename + cleanup, no prompts) on every configured share. It runs as a detached background process, so it keeps running after you close the terminal. Progress is written to `logs/service.log` instead of the screen. Settings (shares + interval) are stored in `service.json` next to the script; you can add more shares later by running `--service <path>` again while it's running, no need to stop it first.
+
+The service reuses your saved TMDb API key and language from `.env`, so run the script normally at least once first if you haven't already.
 
 ---
 
