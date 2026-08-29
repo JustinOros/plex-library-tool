@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -37,10 +38,18 @@ DEFAULT_SERVICE_INTERVAL = 300
 
 VERBOSE = False
 
+_vprint_local = threading.local()
+
 
 def vprint(*args, **kwargs):
-    if VERBOSE:
-        print(*args, **kwargs)
+    if not VERBOSE:
+        return
+    buffer = getattr(_vprint_local, "buffer", None)
+    if buffer is not None:
+        text = kwargs.get("sep", " ").join(str(a) for a in args)
+        buffer.append(text)
+        return
+    print(*args, **kwargs)
 
 
 VIDEO_EXTENSIONS = {
@@ -167,17 +176,31 @@ SUPERSCRIPT_DIGITS = {
     '⁸': ' 8', '⁹': ' 9',
 }
 
+VULGAR_FRACTIONS = {
+    '¼': ' 1/4', '½': ' 1/2', '¾': ' 3/4',
+    '⅓': ' 1/3', '⅔': ' 2/3',
+    '⅕': ' 1/5', '⅖': ' 2/5', '⅗': ' 3/5', '⅘': ' 4/5',
+    '⅙': ' 1/6', '⅚': ' 5/6',
+    '⅐': ' 1/7',
+    '⅛': ' 1/8', '⅜': ' 3/8', '⅝': ' 5/8', '⅞': ' 7/8',
+    '⅑': ' 1/9',
+    '⅒': ' 1/10',
+}
+
 
 def normalize_special_chars(name):
     for special, normal in SUPERSCRIPT_DIGITS.items():
         name = name.replace(special, normal)
+    for special, normal in VULGAR_FRACTIONS.items():
+        name = name.replace(special, normal)
+    name = name.replace('⁄', '/')
     decomposed = unicodedata.normalize('NFKD', name)
     return ''.join(c for c in decomposed if not unicodedata.combining(c))
 
 
 def clean_name(name):
     name = normalize_special_chars(name)
-    name = re.sub(r'[._-]+', ' ', name)
+    name = re.sub(r'[./-]+', ' ', name)
     return re.sub(r'[^A-Za-z0-9 ]', '', name)
 
 
@@ -191,7 +214,7 @@ def clean_and_squeeze(name):
 
 def clean_name_keep_hyphens(name):
     name = normalize_special_chars(name)
-    name = re.sub(r'[._]+', ' ', name)
+    name = re.sub(r'[./]+', ' ', name)
     return re.sub(r'[^A-Za-z0-9 \-]', '', name)
 
 
@@ -789,6 +812,9 @@ def result_year(media_type, result):
     return None
 
 
+YEAR_MATCH_MIN_SIMILARITY = 0.4
+
+
 def best_match(media_type, results, year, query=None):
     if not results:
         return None
@@ -804,9 +830,20 @@ def best_match(media_type, results, year, query=None):
                 return r
 
     if year:
-        for r in results:
-            if result_year(media_type, r) == year:
-                return r
+        year_matches = [r for r in results if result_year(media_type, r) == year]
+        if not year_matches:
+            return None
+        if not query_norm:
+            return year_matches[0]
+
+        def title_similarity(r):
+            return difflib.SequenceMatcher(
+                None, query_norm, clean_and_squeeze(result_title(media_type, r) or "").lower()
+            ).ratio()
+
+        best = max(year_matches, key=title_similarity)
+        if title_similarity(best) >= YEAR_MATCH_MIN_SIMILARITY:
+            return best
         return None
 
     if query_norm:
@@ -1083,6 +1120,7 @@ def detect_resolution(name):
 
 
 def sanitize_rendered_name(name):
+    name = name.replace('/', '／').replace('\\', ' ')
     name = FILESYSTEM_ILLEGAL_CHARS_PATTERN.sub('', name)
     name = EMPTY_GROUP_PATTERN.sub('', name)
     name = squeeze_spaces(name)
@@ -1230,7 +1268,8 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
 
     if not match and "-" in raw_name:
         hyphen_query = build_query(raw_name, year, keep_hyphens=True)
-        if hyphen_query != query:
+        hyphen_query = hyphen_query.strip(" -")
+        if hyphen_query and hyphen_query != query:
             quoted_query = f'"{hyphen_query}"'
             vprint(f"  No match, retrying as quoted phrase (TMDb treats bare hyphens as query operators): query={quoted_query!r}")
             hyphen_results, hyphen_err = tmdb_search(api_key, media_type, quoted_query)
@@ -3167,6 +3206,17 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
 LOOKUP_WORKERS = 8
 
 
+def _buffered_lookup(api_key, media_type, raw_name, hint_year):
+    _vprint_local.buffer = []
+    try:
+        result = lookup_folder(api_key, media_type, raw_name, hint_year)
+    except Exception as e:
+        result = (None, None, None, f"Lookup failed: {raw_name} ({e})")
+    buffer = _vprint_local.buffer
+    _vprint_local.buffer = None
+    return result, buffer
+
+
 def prefetch_lookups(api_key, media_type, folders):
     lookup_cache = {}
     if not folders:
@@ -3174,30 +3224,27 @@ def prefetch_lookups(api_key, media_type, folders):
 
     print(f"Looking up {len(folders)} folder(s) on TMDb...")
 
-    global vprint
-    real_vprint = vprint
-    if not VERBOSE:
-        vprint = lambda *a, **k: None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as executor:
+        futures = {}
+        for folder in folders:
+            raw_name = folder.name
+            hint_year = None
+            if extract_year(raw_name) is None:
+                hint_year = infer_year_from_files(folder)
+            futures[executor.submit(_buffered_lookup, api_key, media_type, raw_name, hint_year)] = (folder, hint_year)
 
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as executor:
-            futures = {}
-            for folder in folders:
-                raw_name = folder.name
-                hint_year = None
-                if extract_year(raw_name) is None:
-                    hint_year = infer_year_from_files(folder)
-                futures[executor.submit(lookup_folder, api_key, media_type, raw_name, hint_year)] = (folder, hint_year)
-
-            for future in concurrent.futures.as_completed(futures):
-                folder, hint_year = futures[future]
-                try:
-                    result = future.result()
-                except Exception as e:
-                    result = (None, None, None, f"Lookup failed: {folder.name} ({e})")
-                lookup_cache[folder] = (hint_year, result)
-    finally:
-        vprint = real_vprint
+        for future in concurrent.futures.as_completed(futures):
+            folder, hint_year = futures[future]
+            try:
+                result, buffer = future.result()
+            except Exception as e:
+                result = (None, None, None, f"Lookup failed: {folder.name} ({e})")
+                buffer = []
+            if VERBOSE and buffer:
+                print(f"-- {folder.name} --")
+                for line in buffer:
+                    print(line)
+            lookup_cache[folder] = (hint_year, result)
 
     print()
     return lookup_cache
