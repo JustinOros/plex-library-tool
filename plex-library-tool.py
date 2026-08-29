@@ -851,7 +851,17 @@ def best_match(media_type, results, year, query=None):
             if is_exact_title(r):
                 return r
 
-    return results[0]
+        def title_similarity(r):
+            return difflib.SequenceMatcher(
+                None, query_norm, clean_and_squeeze(result_title(media_type, r) or "").lower()
+            ).ratio()
+
+        best = max(results, key=title_similarity)
+        if title_similarity(best) >= YEAR_MATCH_MIN_SIMILARITY:
+            return best
+        return None
+
+    return None
 
 
 FUZZY_TITLE_MATCH_THRESHOLD = 0.85
