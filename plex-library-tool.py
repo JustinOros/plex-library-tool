@@ -2354,7 +2354,7 @@ def preview_video_files(folder, media_type, final_name, api_key, tmdb_id=None):
         preview_consolidated_subtitles(subtitles, folder / target_season_folder / item.name)
 
 
-def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=None):
+def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=None, folder_year=None):
     renamed = 0
     skipped = 0
 
@@ -2372,7 +2372,7 @@ def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=Non
             ext = item.suffix.lower().lstrip(".")
             name = final_name
             if multi:
-                per_name, _, _, error = lookup_folder(api_key, media_type, item.stem)
+                per_name, _, _, error = lookup_folder(api_key, media_type, item.stem, folder_year)
                 if error:
                     print(error)
                     skipped += 1
@@ -3371,7 +3371,7 @@ def run_scan(args, log):
             files_renamed += sub_renamed
             files_skipped += sub_skipped
 
-        renamed, skipped = rename_video_files(folder, media_type, final_name, log, api_key, match_id)
+        renamed, skipped = rename_video_files(folder, media_type, final_name, log, api_key, match_id, match_year)
         files_renamed += renamed
         files_skipped += skipped
 
