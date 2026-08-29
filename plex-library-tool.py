@@ -913,6 +913,22 @@ FILE_SIZE_PATTERN = re.compile(r'\b\d+(?:\.\d+)?\s?(?:MB|GB)\b', re.IGNORECASE)
 BIT_DEPTH_PATTERN = re.compile(r'\b\d{1,2}bits?\b', re.IGNORECASE)
 
 
+def strip_language_code_clusters(words):
+    filtered = []
+    i = 0
+    n = len(words)
+    while i < n:
+        j = i
+        while j < n and words[j].lower() in SHORT_LANGUAGE_CODE_TOKENS:
+            j += 1
+        if j - i >= 2:
+            i = j
+            continue
+        filtered.append(words[i])
+        i += 1
+    return filtered
+
+
 def strip_junk_tokens(text):
     text = re.sub(r'\b\d{3,4}p\b', ' ', text, flags=re.IGNORECASE)
     text = FILE_SIZE_PATTERN.sub(' ', text)
@@ -921,6 +937,7 @@ def strip_junk_tokens(text):
     text = IN_FORMAT_PATTERN.sub(' ', text)
     words = text.split()
     kept = [w for w in words if w.lower() not in JUNK_TOKENS]
+    kept = strip_language_code_clusters(kept)
     return squeeze_spaces(' '.join(kept))
 
 
@@ -1240,6 +1257,20 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
                     match = fuzzy_match
                     results = broad_results
 
+    if not match and year:
+        numeric_stripped_query = squeeze_spaces(re.sub(r'\b\d{1,2}\b', ' ', query))
+        if numeric_stripped_query and numeric_stripped_query != query:
+            vprint(f"  No match, retrying with short numeric tokens removed (possible mistranscribed title number): query={numeric_stripped_query!r}")
+            numeric_results, numeric_err = tmdb_search(api_key, media_type, numeric_stripped_query)
+            if not numeric_err:
+                vprint(f"  TMDb returned {len(numeric_results)} result(s)")
+                fuzzy = fuzzy_title_match(media_type, numeric_results, query, year)
+                if fuzzy:
+                    fuzzy_match, ratio = fuzzy
+                    vprint(f"  Fuzzy title match: {result_title(media_type, fuzzy_match)!r} (ratio={ratio:.2f}, id={fuzzy_match.get('id')})")
+                    match = fuzzy_match
+                    results = numeric_results
+
     if not match:
         return None, None, None, f"No match found (Ignoring): {raw_name}"
 
@@ -1426,6 +1457,8 @@ LANGUAGE_CANONICAL = {
 LANGUAGE_ALIAS_TO_CODE = {
     alias: code for code, aliases in LANGUAGE_CANONICAL.items() for alias in aliases
 }
+
+SHORT_LANGUAGE_CODE_TOKENS = {alias for alias in LANGUAGE_ALIAS_TO_CODE if len(alias) <= 3}
 
 
 SUBTITLE_DESCRIPTOR_WORDS = {"forced", "sdh", "cc", "full", "commentary"}
