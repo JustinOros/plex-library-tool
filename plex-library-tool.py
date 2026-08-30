@@ -996,6 +996,20 @@ def strip_language_code_clusters(words):
 
 VERSION_TAG_PATTERN = re.compile(r'\bv\d+(?:\.\d+)*\b', re.IGNORECASE)
 
+LEADING_TRACK_NUMBER_PATTERN = re.compile(r'^0\d\s+')
+
+GENRE_TAG_WORDS = {
+    "action", "adventure", "animation", "animated", "biography", "comedy",
+    "crime", "documentary", "drama", "family", "fantasy", "horror",
+    "musical", "mystery", "romance", "scifi", "sci-fi", "thriller",
+    "war", "western",
+}
+
+GENRE_TAG_PATTERN = re.compile(
+    r'-\s*(?:' + '|'.join(re.escape(w) for w in sorted(GENRE_TAG_WORDS, key=len, reverse=True)) + r')\s+(?=(?:19|20)\d{2}\b)',
+    re.IGNORECASE,
+)
+
 
 def strip_junk_tokens(text):
     text = re.sub(r'\b\d{3,4}p\b', ' ', text, flags=re.IGNORECASE)
@@ -1007,6 +1021,8 @@ def strip_junk_tokens(text):
     words = text.split()
     kept = [w for w in words if w.lower() not in JUNK_TOKENS]
     kept = strip_language_code_clusters(kept)
+    if len(kept) > 1 and kept[-1].lower() in ENGLISH_LANGUAGE_TOKENS:
+        kept = kept[:-1]
     return squeeze_spaces(' '.join(kept))
 
 
@@ -1082,9 +1098,11 @@ def strip_junk_trailing_paren(raw_name):
 
 def build_query(raw_name, year, keep_hyphens=False):
     raw_name = strip_leading_watermark(raw_name)
+    raw_name = LEADING_TRACK_NUMBER_PATTERN.sub('', raw_name)
     raw_name = URL_PATTERN.sub(' ', raw_name)
     raw_name = WWW_DOMAIN_PATTERN.sub(' ', raw_name)
     raw_name = VERSION_TAG_PATTERN.sub(' ', raw_name)
+    raw_name = GENRE_TAG_PATTERN.sub(' ', raw_name)
 
     cut_points = []
     match = SEASON_TRUNCATE_PATTERN.search(raw_name)
@@ -1620,6 +1638,23 @@ def resolve_subtitle_language(path):
     return None
 
 
+TRAILING_WORD_PATTERN = re.compile(r'[._\-\s]+([A-Za-z]+)\s*$')
+
+
+def strip_subtitle_language_suffix(stem):
+    result = stem
+    while True:
+        m_trail = TRAILING_WORD_PATTERN.search(result)
+        if not m_trail:
+            break
+        word = m_trail.group(1).lower()
+        if word in SUBTITLE_DESCRIPTOR_WORDS or word in ENGLISH_LANGUAGE_TOKENS or word in OTHER_LANGUAGE_TOKENS:
+            result = result[:m_trail.start()]
+        else:
+            break
+    return result if result.strip() else stem
+
+
 def gather_video_subtitles(video_path, multi):
     folder = video_path.parent
     pattern = stem_match_pattern(video_path.stem) if multi else None
@@ -2110,6 +2145,63 @@ def find_matching_episode_video(target_season_dir, episode):
         v_episode = v_se[1] if v_se else parse_episode_only(vid.name)
         if v_episode == episode:
             return vid
+    return None
+
+
+def build_movie_folder_index(share):
+    index = []
+    for folder in sorted(p for p in Path(share).iterdir() if p.is_dir() and not p.name.startswith(".")):
+        videos = list_video_files(folder)
+        if len(videos) != 1:
+            continue
+        folder_year = extract_year(folder.name)
+        folder_query = build_query(folder.name, folder_year)
+        index.append((folder, videos[0], folder_year, folder_query))
+    return index
+
+
+def match_movie_from_index(index, query, year):
+    best = None
+    best_video = None
+    best_ratio = 0.0
+
+    for folder, video, folder_year, folder_query in index:
+        if year and folder_year and abs(int(folder_year) - int(year)) > NEAR_YEAR_MAX_DIFF:
+            continue
+        ratio = difflib.SequenceMatcher(None, query.lower(), folder_query.lower()).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best = folder
+            best_video = video
+
+    if best is not None and best_ratio >= NEAR_YEAR_MATCH_MIN_SIMILARITY:
+        return best, best_video
+    return None, None
+
+
+def build_show_folder_index(share):
+    index = []
+    for folder in sorted(p for p in Path(share).iterdir() if p.is_dir() and not p.name.startswith(".")):
+        folder_year = extract_year(folder.name)
+        folder_query = build_query(folder.name, folder_year)
+        index.append((folder, folder_year, folder_query))
+    return index
+
+
+def match_show_from_index(index, query, year):
+    best = None
+    best_ratio = 0.0
+
+    for folder, folder_year, folder_query in index:
+        if year and folder_year and abs(int(folder_year) - int(year)) > NEAR_YEAR_MAX_DIFF:
+            continue
+        ratio = difflib.SequenceMatcher(None, query.lower(), folder_query.lower()).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best = folder
+
+    if best is not None and best_ratio >= NEAR_YEAR_MATCH_MIN_SIMILARITY:
+        return best
     return None
 
 
@@ -3075,6 +3167,13 @@ def list_loose_video_files(share):
     ]
 
 
+def list_loose_subtitle_files(share):
+    return [
+        item for item in sorted(Path(share).iterdir())
+        if item.is_file() and (item.suffix.lower().lstrip(".") in SUBTITLE_EXTENSIONS or item.suffix.lower().lstrip(".") == "idx")
+    ]
+
+
 def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
     files = list_loose_video_files(share)
     if not files:
@@ -3236,6 +3335,86 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
 
     print()
     return folders_renamed, folders_skipped, files_renamed, files_skipped
+
+
+def process_loose_subtitle_files(share, media_type, log, test_mode, args):
+    files = list_loose_subtitle_files(share)
+    if not files:
+        return 0, 0
+
+    print(f"Found {len(files)} loose subtitle file(s) directly in {Path(share).name} with no video of their own:")
+    print()
+
+    movie_index = build_movie_folder_index(share) if media_type == "movie" else None
+    show_index = build_show_folder_index(share) if media_type != "movie" else None
+
+    renamed = 0
+    skipped = 0
+    total = len(files)
+
+    for index, item in enumerate(files, start=1):
+        print(f"[{index}/{total}] {item.name}")
+
+        if not is_file_stable(item):
+            print(f"Skipping (still being copied): {item.name}")
+            skipped += 1
+            continue
+
+        base = strip_subtitle_language_suffix(item.stem)
+        year = extract_year(base)
+        query = build_query(base, year)
+        if not query:
+            print(f"Skipping (could not determine title): {item.name}")
+            skipped += 1
+            continue
+
+        video = None
+        folder = None
+
+        if media_type == "movie":
+            folder, video = match_movie_from_index(movie_index, query, year)
+            if not folder:
+                print(f"No matching movie found, skipping: {item.name}")
+                skipped += 1
+                continue
+        else:
+            se = parse_season_episode(item.name)
+            if not se:
+                print(f"No season/episode found, skipping: {item.name}")
+                skipped += 1
+                continue
+            season, episode, _ = se
+            folder = match_show_from_index(show_index, query, year)
+            if not folder:
+                print(f"No matching show found, skipping: {item.name}")
+                skipped += 1
+                continue
+            season_dir = folder / season_folder_name(season)
+            if not season_dir.is_dir():
+                print(f"No matching season in '{folder.name}', skipping: {item.name}")
+                skipped += 1
+                continue
+            video = find_matching_episode_video(season_dir, episode)
+            if not video:
+                print(f"No matching episode in '{folder.name}', skipping: {item.name}")
+                skipped += 1
+                continue
+
+        if test_mode:
+            print(f"Would move: {item.name} -> matches {folder.name}/{video.name}")
+            preview_consolidated_subtitles([item], video)
+            renamed += 1
+            continue
+
+        if not args.yes and not confirm(f"Move '{item.name}' to match '{folder.name}/{video.name}'?"):
+            print(f"Skipped: {item.name}")
+            skipped += 1
+            continue
+
+        renamed += rename_consolidated_subtitles([item], video, log)
+
+    print()
+    return renamed, skipped
 
 
 LOOKUP_WORKERS = 8
@@ -3468,6 +3647,11 @@ def run_scan(args, log):
         folders_skipped += loose_folders_skipped
         files_renamed += loose_files_renamed
         files_skipped += loose_files_skipped
+
+    if not (is_single_show or is_single_movie):
+        sub_renamed, sub_skipped = process_loose_subtitle_files(share, media_type, log, test_mode, args)
+        files_renamed += sub_renamed
+        files_skipped += sub_skipped
 
     print()
     if test_mode:
