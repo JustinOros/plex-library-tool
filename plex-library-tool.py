@@ -32,6 +32,7 @@ TMDB_BASE = "https://api.themoviedb.org/3"
 DELETE_FILE = SCRIPT_DIR / "delete.yaml"
 NAMES_FILE = SCRIPT_DIR / "names.yaml"
 CLEANUP_TRASH_DIR = SCRIPT_DIR / ".trash"
+DUPLICATES_FOLDER_NAME = "DUPLICATES"
 SERVICE_CONFIG_FILE = SCRIPT_DIR / "service.json"
 SERVICE_LOG_FILE = LOG_DIR / "service.log"
 DEFAULT_SERVICE_INTERVAL = 300
@@ -1335,19 +1336,37 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
                     query = hyphen_query
 
     if not match and year:
-        words = query.split()
-        if len(words) > 1:
-            broadened_query = " ".join(words[:-1])
-            vprint(f"  No match, retrying with broadened query (possible title typo): query={broadened_query!r}")
+        broadened_words = query.split()
+        while not match and len(broadened_words) > 1:
+            broadened_words = broadened_words[:-1]
+            broadened_query = " ".join(broadened_words)
+            vprint(f"  No match, retrying with broadened query (possible title typo or trailing extra words): query={broadened_query!r}")
             broad_results, broad_err = tmdb_search(api_key, media_type, broadened_query)
-            if not broad_err:
-                vprint(f"  TMDb returned {len(broad_results)} result(s)")
-                fuzzy = fuzzy_title_match(media_type, broad_results, query, year)
-                if fuzzy:
-                    fuzzy_match, ratio = fuzzy
-                    vprint(f"  Fuzzy title match: {result_title(media_type, fuzzy_match)!r} (ratio={ratio:.2f}, id={fuzzy_match.get('id')})")
-                    match = fuzzy_match
-                    results = broad_results
+            if broad_err:
+                break
+            vprint(f"  TMDb returned {len(broad_results)} result(s)")
+            fuzzy = fuzzy_title_match(media_type, broad_results, broadened_query, year)
+            if fuzzy:
+                fuzzy_match, ratio = fuzzy
+                vprint(f"  Fuzzy title match: {result_title(media_type, fuzzy_match)!r} (ratio={ratio:.2f}, id={fuzzy_match.get('id')})")
+                match = fuzzy_match
+                results = broad_results
+
+    if not match and not year:
+        broadened_words = query.split()
+        while not match and len(broadened_words) > 1:
+            broadened_words = broadened_words[:-1]
+            broadened_query = " ".join(broadened_words)
+            vprint(f"  No match, retrying with broadened query (no year, possible extra words): query={broadened_query!r}")
+            broad_results, broad_err = tmdb_search(api_key, media_type, broadened_query)
+            if broad_err:
+                break
+            vprint(f"  TMDb returned {len(broad_results)} result(s)")
+            candidate = best_match(media_type, broad_results, None, broadened_query)
+            if candidate:
+                vprint(f"  Best match: {result_title(media_type, candidate)!r} (id={candidate.get('id')})")
+                match = candidate
+                results = broad_results
 
     if not match and year:
         numeric_stripped_query = squeeze_spaces(re.sub(r'\b\d{1,2}\b', ' ', query))
@@ -1757,6 +1776,12 @@ def duplicate_trash_path(item):
     return unique_destination(dest_dir / item.name)
 
 
+def duplicate_folder_staging_path(share, item):
+    dest_dir = Path(share) / DUPLICATES_FOLDER_NAME
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    return unique_destination(dest_dir / item.name)
+
+
 def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
     new_stem = new_video_path.stem
     target_dir = new_video_path.parent / subtitle_folder_name()
@@ -1972,6 +1997,10 @@ def preview_subtitle_folder(folder):
         print(f"Renamed folder: {entry.name} -> {canonical_name}")
 
 
+def is_library_content_folder(p):
+    return p.is_dir() and not p.name.startswith(".") and p.name.upper() != DUPLICATES_FOLDER_NAME
+
+
 def list_subfolders(folder):
     return sorted(p for p in folder.iterdir() if p.is_dir() and not p.name.startswith("."))
 
@@ -2150,7 +2179,7 @@ def find_matching_episode_video(target_season_dir, episode):
 
 def build_movie_folder_index(share):
     index = []
-    for folder in sorted(p for p in Path(share).iterdir() if p.is_dir() and not p.name.startswith(".")):
+    for folder in sorted(p for p in Path(share).iterdir() if is_library_content_folder(p)):
         videos = list_video_files(folder)
         if len(videos) != 1:
             continue
@@ -2161,27 +2190,36 @@ def build_movie_folder_index(share):
 
 
 def match_movie_from_index(index, query, year):
-    best = None
-    best_video = None
-    best_ratio = 0.0
+    words = query.split()
 
-    for folder, video, folder_year, folder_query in index:
-        if year and folder_year and abs(int(folder_year) - int(year)) > NEAR_YEAR_MAX_DIFF:
-            continue
-        ratio = difflib.SequenceMatcher(None, query.lower(), folder_query.lower()).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best = folder
-            best_video = video
+    while words:
+        candidate = " ".join(words)
+        best = None
+        best_video = None
+        best_ratio = 0.0
 
-    if best is not None and best_ratio >= NEAR_YEAR_MATCH_MIN_SIMILARITY:
-        return best, best_video
+        for folder, video, folder_year, folder_query in index:
+            if year and folder_year and abs(int(folder_year) - int(year)) > NEAR_YEAR_MAX_DIFF:
+                continue
+            ratio = difflib.SequenceMatcher(None, candidate.lower(), folder_query.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best = folder
+                best_video = video
+
+        if best is not None and best_ratio >= NEAR_YEAR_MATCH_MIN_SIMILARITY:
+            return best, best_video
+
+        if len(words) <= 2:
+            break
+        words = words[:-1]
+
     return None, None
 
 
 def build_show_folder_index(share):
     index = []
-    for folder in sorted(p for p in Path(share).iterdir() if p.is_dir() and not p.name.startswith(".")):
+    for folder in sorted(p for p in Path(share).iterdir() if is_library_content_folder(p)):
         folder_year = extract_year(folder.name)
         folder_query = build_query(folder.name, folder_year)
         index.append((folder, folder_year, folder_query))
@@ -2189,19 +2227,28 @@ def build_show_folder_index(share):
 
 
 def match_show_from_index(index, query, year):
-    best = None
-    best_ratio = 0.0
+    words = query.split()
 
-    for folder, folder_year, folder_query in index:
-        if year and folder_year and abs(int(folder_year) - int(year)) > NEAR_YEAR_MAX_DIFF:
-            continue
-        ratio = difflib.SequenceMatcher(None, query.lower(), folder_query.lower()).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best = folder
+    while words:
+        candidate = " ".join(words)
+        best = None
+        best_ratio = 0.0
 
-    if best is not None and best_ratio >= NEAR_YEAR_MATCH_MIN_SIMILARITY:
-        return best
+        for folder, folder_year, folder_query in index:
+            if year and folder_year and abs(int(folder_year) - int(year)) > NEAR_YEAR_MAX_DIFF:
+                continue
+            ratio = difflib.SequenceMatcher(None, candidate.lower(), folder_query.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best = folder
+
+        if best is not None and best_ratio >= NEAR_YEAR_MATCH_MIN_SIMILARITY:
+            return best
+
+        if len(words) <= 2:
+            break
+        words = words[:-1]
+
     return None
 
 
@@ -2909,6 +2956,11 @@ def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_
     unchanged_folder_names = unchanged_folder_names or set()
     share_root = Path(share)
 
+    duplicates_dir = share_root / DUPLICATES_FOLDER_NAME
+    if duplicates_dir.is_dir():
+        vprint(f"  Match (duplicates staging folder): {duplicates_dir}")
+        targets.append(("folder", duplicates_dir))
+
     def walk(folder):
         vprint(f"Scanning folder: {folder}")
         try:
@@ -2918,6 +2970,8 @@ def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_
             return
         for entry in entries:
             if entry.is_dir():
+                if entry == duplicates_dir:
+                    continue
                 if matches_folder_name(entry.name, delete_folder_names):
                     vprint(f"  Match (folder name): {entry}")
                     targets.append(("folder", entry))
@@ -3012,7 +3066,9 @@ def run_cleanup(args, log):
     vprint(f"Loaded {len(delete_file_patterns)} file pattern(s) from {DELETE_FILE.name}: {delete_file_patterns}")
     vprint(f"Loaded subtitle rules: keep={keep_languages or 'none'}, delete={delete_languages or 'none'}")
 
-    if not delete_folder_names and not delete_file_patterns and not keep_languages and not delete_languages:
+    has_duplicates_folder = (Path(share) / DUPLICATES_FOLDER_NAME).is_dir()
+
+    if not delete_folder_names and not delete_file_patterns and not keep_languages and not delete_languages and not has_duplicates_folder:
         print("No cleanup rules configured.")
         print(f"Edit {DELETE_FILE.name} to enable cleanup.")
         return
@@ -3030,7 +3086,7 @@ def run_cleanup(args, log):
     share_path = Path(share)
     try:
         top_level_folders = [
-            p for p in share_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+            p for p in share_path.iterdir() if is_library_content_folder(p)
         ]
     except OSError:
         top_level_folders = []
@@ -3500,7 +3556,7 @@ def run_scan(args, log):
         subfolders = [share_path]
     else:
         subfolders = sorted(
-            p for p in share_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+            p for p in share_path.iterdir() if is_library_content_folder(p)
         )
     loose_files = [] if (is_single_show or is_single_movie) else list_loose_video_files(share)
 
@@ -3570,9 +3626,14 @@ def run_scan(args, log):
                 new_folder.is_dir() or folder_name in simulated_tv_folder_names
             ) and not same_existing_path(new_folder, folder)
 
-            if media_type == "tv" and needs_rename and target_already_taken:
-                print(f"Would merge into existing show folder: {raw_name} -> {folder_name}")
-                preview_merge_duplicate_show_folder(folder, new_folder, raw_name, final_name)
+            if needs_rename and target_already_taken:
+                if media_type == "tv":
+                    print(f"Would merge into existing show folder: {raw_name} -> {folder_name}")
+                    preview_merge_duplicate_show_folder(folder, new_folder, raw_name, final_name)
+                elif list_video_files(new_folder):
+                    print(f"Would move duplicate folder to {DUPLICATES_FOLDER_NAME}/: {raw_name} (already exists as {folder_name})")
+                else:
+                    print(f"Skipping (target already exists): {raw_name} -> {folder_name}")
                 examples_shown += 1
                 continue
 
@@ -3610,8 +3671,23 @@ def run_scan(args, log):
                 continue
 
             if new_folder.exists() and not same_existing_path(new_folder, folder):
-                print(f"Skipping (target already exists): {raw_name} -> {folder_name}")
-                folders_skipped += 1
+                if list_video_files(new_folder):
+                    if args.yes or confirm(f"'{folder_name}' already exists. Move duplicate folder '{raw_name}' to {DUPLICATES_FOLDER_NAME}/?"):
+                        staged_dest = duplicate_folder_staging_path(share, folder)
+                        ok, err = safe_move(folder, staged_dest)
+                        if ok:
+                            log.record(folder, staged_dest)
+                            print(f"Moved duplicate folder to {DUPLICATES_FOLDER_NAME}/: {raw_name}")
+                            folders_renamed += 1
+                        else:
+                            print(f"Skipping (could not move to {DUPLICATES_FOLDER_NAME}/: {err}): {raw_name}")
+                            folders_skipped += 1
+                    else:
+                        print(f"Skipped: {raw_name}")
+                        folders_skipped += 1
+                else:
+                    print(f"Skipping (target already exists): {raw_name} -> {folder_name}")
+                    folders_skipped += 1
                 continue
 
             ok, err = safe_rename(folder, new_folder)
@@ -3667,7 +3743,7 @@ def run_scan(args, log):
         print(f"Log saved: {log_path}")
 
     current_names = {
-        p.name for p in Path(share).iterdir() if p.is_dir() and not p.name.startswith(".")
+        p.name for p in Path(share).iterdir() if is_library_content_folder(p)
     }
     baseline = {name: sig for name, sig in baseline.items() if name in current_names}
     cache[share_key] = baseline
@@ -3830,7 +3906,7 @@ def run_episode_check(args):
         shows = [share_path]
     else:
         shows = sorted(
-            p for p in share_path.iterdir() if p.is_dir() and not p.name.startswith(".")
+            p for p in share_path.iterdir() if is_library_content_folder(p)
         )
 
     checked = 0
