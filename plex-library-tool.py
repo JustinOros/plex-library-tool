@@ -813,6 +813,8 @@ def result_year(media_type, result):
 
 
 YEAR_MATCH_MIN_SIMILARITY = 0.4
+NEAR_YEAR_MAX_DIFF = 1
+NEAR_YEAR_MATCH_MIN_SIMILARITY = 0.85
 
 
 def best_match(media_type, results, year, query=None):
@@ -832,6 +834,22 @@ def best_match(media_type, results, year, query=None):
     if year:
         year_matches = [r for r in results if result_year(media_type, r) == year]
         if not year_matches:
+            if not query_norm:
+                return None
+
+            def near_title_similarity(r):
+                return difflib.SequenceMatcher(
+                    None, query_norm, clean_and_squeeze(result_title(media_type, r) or "").lower()
+                ).ratio()
+
+            near_year_matches = [
+                r for r in results
+                if result_year(media_type, r) and abs(int(result_year(media_type, r)) - int(year)) <= NEAR_YEAR_MAX_DIFF
+            ]
+            if near_year_matches:
+                best = max(near_year_matches, key=near_title_similarity)
+                if near_title_similarity(best) >= NEAR_YEAR_MATCH_MIN_SIMILARITY:
+                    return best
             return None
         if not query_norm:
             return year_matches[0]
@@ -976,12 +994,16 @@ def strip_language_code_clusters(words):
     return filtered
 
 
+VERSION_TAG_PATTERN = re.compile(r'\bv\d+(?:\.\d+)*\b', re.IGNORECASE)
+
+
 def strip_junk_tokens(text):
     text = re.sub(r'\b\d{3,4}p\b', ' ', text, flags=re.IGNORECASE)
     text = FILE_SIZE_PATTERN.sub(' ', text)
     text = BIT_DEPTH_PATTERN.sub(' ', text)
     text = SEASON_RANGE_PATTERN.sub(' ', text)
     text = IN_FORMAT_PATTERN.sub(' ', text)
+    text = VERSION_TAG_PATTERN.sub(' ', text)
     words = text.split()
     kept = [w for w in words if w.lower() not in JUNK_TOKENS]
     kept = strip_language_code_clusters(kept)
@@ -1062,6 +1084,7 @@ def build_query(raw_name, year, keep_hyphens=False):
     raw_name = strip_leading_watermark(raw_name)
     raw_name = URL_PATTERN.sub(' ', raw_name)
     raw_name = WWW_DOMAIN_PATTERN.sub(' ', raw_name)
+    raw_name = VERSION_TAG_PATTERN.sub(' ', raw_name)
 
     cut_points = []
     match = SEASON_TRUNCATE_PATTERN.search(raw_name)
