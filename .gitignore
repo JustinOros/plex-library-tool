@@ -3,6 +3,7 @@ logs/
 backups/
 .trash/
 cache.json
+service.json
 __pycache__/
 *.pyc
 .DS_Store
