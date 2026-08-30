@@ -938,7 +938,7 @@ JUNK_TOKENS = {
     "webrip", "webdl", "web", "dl", "hdtv", "hdrip", "dvdrip", "dvd",
     "hevc", "x264", "x265", "h264", "h265", "avc", "xvid", "divx",
     "aac", "ac3", "eac3", "dts", "atmos", "ddp", "dd",
-    "proper", "repack", "extended", "unrated", "uncut", "director", "directors", "cut",
+    "proper", "repack", "extended", "unrated", "uncut", "ultimate", "director", "directors", "cut",
     "internal", "limited", "theatrical", "multi", "dual", "audio",
     "hdr", "sdr", "4k", "uhd", "10bit", "8bit", "hi10p", "hi444pp",
     "deluxe", "boxset", "box", "set", "extras", "hd",
@@ -1049,6 +1049,8 @@ def strip_junk_trailing_paren(raw_name):
         if not re.fullmatch(r'\d{3,4}p', w, re.IGNORECASE)
         and not BARE_YEAR_PATTERN.fullmatch(w)
         and w.lower() not in JUNK_TOKENS
+        and w.lower() not in ENGLISH_LANGUAGE_TOKENS
+        and w.lower() not in OTHER_LANGUAGE_TOKENS
     ]
 
     if 0 < len(significant) <= 1:
