@@ -927,11 +927,34 @@ def safe_rename(src, dest):
         return False, str(e)
 
 
+def is_stray_metadata_name(name):
+    return name == ".DS_Store" or name.startswith("._")
+
+
+def purge_stray_metadata(path):
+    for root, dirs, files in os.walk(str(path), topdown=False):
+        for name in files:
+            if is_stray_metadata_name(name):
+                try:
+                    os.remove(os.path.join(root, name))
+                except OSError:
+                    pass
+
+
 def safe_move(src, dest):
     try:
         shutil.move(str(src), str(dest))
         return True, None
     except OSError as e:
+        src_path = Path(src)
+        dest_path = Path(dest)
+        if src_path.is_dir() and dest_path.exists():
+            purge_stray_metadata(src_path)
+            try:
+                shutil.rmtree(str(src_path))
+                return True, None
+            except OSError as e2:
+                return False, str(e2)
         return False, str(e)
 
 
@@ -3200,7 +3223,14 @@ def run_cleanup(args, log):
 
         dest.parent.mkdir(parents=True, exist_ok=True)
         vprint(f"Moving {item} -> {dest}")
-        shutil.move(str(item), str(dest))
+        ok, err = safe_move(item, dest)
+        if not ok:
+            print(f"Skipping (could not move to trash: {err}): {item}")
+            if kind == "folder":
+                skipped_folders += 1
+            else:
+                skipped_files += 1
+            continue
         log.record(item, dest)
         print(f"Moved to trash: {item}")
         if kind == "folder":
@@ -4160,7 +4190,11 @@ def run_restore(log_arg):
             continue
 
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dst))
+        ok, err = safe_move(src, dst)
+        if not ok:
+            print(f"Skipping (could not restore: {err}): {src}")
+            skipped += 1
+            continue
         print(f"Restored: {src} -> {dst}")
         restored += 1
 
