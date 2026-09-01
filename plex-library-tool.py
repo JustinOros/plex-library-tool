@@ -3230,7 +3230,9 @@ def list_loose_subtitle_files(share):
     ]
 
 
-def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
+def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args, needs_attention=None):
+    if needs_attention is None:
+        needs_attention = []
     files = list_loose_video_files(share)
     if not files:
         return 0, 0, 0, 0
@@ -3262,6 +3264,7 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
             print(error)
             shown += 1
             folders_skipped += 1
+            needs_attention.append(("No TMDb match", item.name))
             continue
 
         folder_name = folder_target_name("movie", final_name, match_year, item.stem)
@@ -3287,6 +3290,7 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
         if dest.exists() and not same_existing_path(dest, item):
             print(f"Skipping (target already exists): {item.name}")
             folders_skipped += 1
+            needs_attention.append(("Target already exists", item.name))
             continue
 
         target_folder.mkdir(exist_ok=True)
@@ -3294,6 +3298,7 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
         if not ok:
             print(f"Skipping ({err}): {item.name}")
             folders_skipped += 1
+            needs_attention.append(("Error", f"{item.name} ({err})"))
             continue
         log.record(item, dest)
         print(f"Moved: {item.name} -> {folder_name}/{new_name}")
@@ -3305,7 +3310,9 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args):
     return folders_renamed, folders_skipped, files_renamed, files_skipped
 
 
-def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
+def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args, needs_attention=None):
+    if needs_attention is None:
+        needs_attention = []
     files = list_loose_video_files(share)
     if not files:
         return 0, 0, 0, 0
@@ -3337,6 +3344,7 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
             print(error)
             shown += 1
             files_skipped += 1
+            needs_attention.append(("No TMDb match", item.name))
             continue
 
         se = parse_season_episode(item.name)
@@ -3348,6 +3356,7 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
                 print(f"No season/episode found, skipping: {item.name}")
                 shown += 1
                 files_skipped += 1
+                needs_attention.append(("Unresolved season/episode", item.name))
                 continue
             season, episode = resolved
 
@@ -3375,6 +3384,7 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
         if dest.exists() and not same_existing_path(dest, item):
             print(f"Skipping (target already exists): {item.name}")
             files_skipped += 1
+            needs_attention.append(("Target already exists", item.name))
             continue
 
         (target_folder / target_season_folder_name).mkdir(parents=True, exist_ok=True)
@@ -3382,6 +3392,7 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
         if not ok:
             print(f"Skipping ({err}): {item.name}")
             files_skipped += 1
+            needs_attention.append(("Error", f"{item.name} ({err})"))
             continue
         log.record(item, dest)
         print(f"Moved: {item.name} -> {folder_name}/{target_season_folder_name}/{new_name}")
@@ -3393,7 +3404,9 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args):
     return folders_renamed, folders_skipped, files_renamed, files_skipped
 
 
-def process_loose_subtitle_files(share, media_type, log, test_mode, args):
+def process_loose_subtitle_files(share, media_type, log, test_mode, args, needs_attention=None):
+    if needs_attention is None:
+        needs_attention = []
     files = list_loose_subtitle_files(share)
     if not files:
         return 0, 0
@@ -3422,6 +3435,7 @@ def process_loose_subtitle_files(share, media_type, log, test_mode, args):
         if not query:
             print(f"Skipping (could not determine title): {item.name}")
             skipped += 1
+            needs_attention.append(("Subtitle not placed", item.name))
             continue
 
         video = None
@@ -3432,28 +3446,33 @@ def process_loose_subtitle_files(share, media_type, log, test_mode, args):
             if not folder:
                 print(f"No matching movie found, skipping: {item.name}")
                 skipped += 1
+                needs_attention.append(("Subtitle not placed", item.name))
                 continue
         else:
             se = parse_season_episode(item.name)
             if not se:
                 print(f"No season/episode found, skipping: {item.name}")
                 skipped += 1
+                needs_attention.append(("Subtitle not placed", item.name))
                 continue
             season, episode, _ = se
             folder = match_show_from_index(show_index, query, year)
             if not folder:
                 print(f"No matching show found, skipping: {item.name}")
                 skipped += 1
+                needs_attention.append(("Subtitle not placed", item.name))
                 continue
             season_dir = folder / season_folder_name(season)
             if not season_dir.is_dir():
                 print(f"No matching season in '{folder.name}', skipping: {item.name}")
                 skipped += 1
+                needs_attention.append(("Subtitle not placed", item.name))
                 continue
             video = find_matching_episode_video(season_dir, episode)
             if not video:
                 print(f"No matching episode in '{folder.name}', skipping: {item.name}")
                 skipped += 1
+                needs_attention.append(("Subtitle not placed", item.name))
                 continue
 
         if test_mode:
@@ -3518,6 +3537,22 @@ def prefetch_lookups(api_key, media_type, folders):
 
     print()
     return lookup_cache
+
+
+def print_needs_attention(needs_attention):
+    if not needs_attention:
+        return
+
+    by_category = {}
+    for category, name in needs_attention:
+        by_category.setdefault(category, []).append(name)
+
+    print(f"=== Needs attention ({len(needs_attention)}) ===")
+    for category, names in by_category.items():
+        print(f"{category}:")
+        for name in names:
+            print(f"  {name}")
+    print()
 
 
 def run_scan(args, log):
@@ -3586,6 +3621,7 @@ def run_scan(args, log):
     files_renamed = 0
     files_skipped = 0
     simulated_tv_folder_names = set()
+    needs_attention = []
 
     total_folders = len(subfolders)
 
@@ -3615,6 +3651,7 @@ def run_scan(args, log):
             print(error)
             examples_shown += 1
             folders_skipped += 1
+            needs_attention.append(("No TMDb match", raw_name))
             continue
 
         folder_name = folder_target_name(media_type, final_name, match_year, raw_name)
@@ -3634,6 +3671,7 @@ def run_scan(args, log):
                     print(f"Would move duplicate folder to {DUPLICATES_FOLDER_NAME}/: {raw_name} (already exists as {folder_name})")
                 else:
                     print(f"Skipping (target already exists): {raw_name} -> {folder_name}")
+                    needs_attention.append(("Target already exists", raw_name))
                 examples_shown += 1
                 continue
 
@@ -3682,18 +3720,21 @@ def run_scan(args, log):
                         else:
                             print(f"Skipping (could not move to {DUPLICATES_FOLDER_NAME}/: {err}): {raw_name}")
                             folders_skipped += 1
+                            needs_attention.append(("Error", f"{raw_name} ({err})"))
                     else:
                         print(f"Skipped: {raw_name}")
                         folders_skipped += 1
                 else:
                     print(f"Skipping (target already exists): {raw_name} -> {folder_name}")
                     folders_skipped += 1
+                    needs_attention.append(("Target already exists", raw_name))
                 continue
 
             ok, err = safe_rename(folder, new_folder)
             if not ok:
                 print(f"Skipping ({err}): {raw_name} -> {folder_name}")
                 folders_skipped += 1
+                needs_attention.append(("Error", f"{raw_name} ({err})"))
                 continue
             log.record(folder, new_folder)
             print(f"Renamed folder: {raw_name} -> {folder_name}")
@@ -3717,7 +3758,7 @@ def run_scan(args, log):
     if loose_files:
         loose_processor = process_loose_movie_files if media_type == "movie" else process_loose_tv_files
         loose_folders_renamed, loose_folders_skipped, loose_files_renamed, loose_files_skipped = loose_processor(
-            share, api_key, log, test_mode, test_limit, args
+            share, api_key, log, test_mode, test_limit, args, needs_attention
         )
         folders_renamed += loose_folders_renamed
         folders_skipped += loose_folders_skipped
@@ -3725,18 +3766,21 @@ def run_scan(args, log):
         files_skipped += loose_files_skipped
 
     if not (is_single_show or is_single_movie):
-        sub_renamed, sub_skipped = process_loose_subtitle_files(share, media_type, log, test_mode, args)
+        sub_renamed, sub_skipped = process_loose_subtitle_files(share, media_type, log, test_mode, args, needs_attention)
         files_renamed += sub_renamed
         files_skipped += sub_skipped
 
     print()
     if test_mode:
+        print_needs_attention(needs_attention)
         print("Test mode: no changes were made.")
         return
 
     print("=== Summary ===")
     print(f"Folders renamed: {folders_renamed}, skipped: {folders_skipped}")
     print(f"Files renamed: {files_renamed}, skipped: {files_skipped}")
+    print()
+    print_needs_attention(needs_attention)
 
     log_path = log.save(label=Path(share).name)
     if log_path:
