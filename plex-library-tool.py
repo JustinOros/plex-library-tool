@@ -1782,6 +1782,23 @@ def duplicate_folder_staging_path(share, item):
     return unique_destination(dest_dir / item.name)
 
 
+def duplicate_file_staging_path(share, context_name, item):
+    dest_dir = Path(share) / DUPLICATES_FOLDER_NAME / context_name
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    return unique_destination(dest_dir / item.name)
+
+
+def stage_duplicate_episode(share, context_name, item, log):
+    staged_dest = duplicate_file_staging_path(share, context_name, item)
+    ok, err = safe_move(item, staged_dest)
+    if not ok:
+        print(f"Skipping (could not move to {DUPLICATES_FOLDER_NAME}/: {err}): {item.name}")
+        return False
+    log.record(item, staged_dest)
+    print(f"Moved duplicate episode to {DUPLICATES_FOLDER_NAME}/{context_name}/: {item.name}")
+    return True
+
+
 def compute_consolidated_subtitle_pairs(subtitles, new_video_path):
     new_stem = new_video_path.stem
     target_dir = new_video_path.parent / subtitle_folder_name()
@@ -2093,7 +2110,7 @@ def preview_season_folder_files(folder, final_name, api_key=None, tmdb_id=None):
     preview_orphaned_subtitle_packs(folder, folder, None)
 
 
-def rename_season_folder_files(folder, final_name, log, api_key=None, tmdb_id=None):
+def rename_season_folder_files(share, folder, final_name, log, api_key=None, tmdb_id=None):
     renamed = 0
     skipped = 0
 
@@ -2131,8 +2148,10 @@ def rename_season_folder_files(folder, final_name, log, api_key=None, tmdb_id=No
                 renamed += rename_consolidated_subtitles(subtitles, item, log)
                 continue
             if dest.exists() and not same_existing_path(dest, item):
-                print(f"Skipping (target already exists): {item.name}")
-                skipped += 1
+                if stage_duplicate_episode(share, folder.name, item, log):
+                    renamed += 1
+                else:
+                    skipped += 1
                 continue
 
             if target_dir != sub:
@@ -2354,7 +2373,7 @@ def preview_orphaned_subtitle_packs(container_folder, target_folder, season):
         preview_consolidated_subtitles(subtitle_files, video_match)
 
 
-def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_name, log):
+def merge_duplicate_show_folder(share, source_folder, target_folder, raw_name, final_name, log):
     moved = 0
     skipped = 0
 
@@ -2383,8 +2402,10 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
             )
             dest = item_target_dir / new_name
             if dest.exists() and not same_existing_path(dest, item):
-                print(f"Skipping (target already exists): {item.name}")
-                skipped += 1
+                if stage_duplicate_episode(share, target_folder.name, item, log):
+                    moved += 1
+                else:
+                    skipped += 1
                 continue
 
             item_target_dir.mkdir(exist_ok=True)
@@ -2435,8 +2456,10 @@ def merge_duplicate_show_folder(source_folder, target_folder, raw_name, final_na
         dest = item_target_dir / new_name
 
         if dest.exists() and not same_existing_path(dest, item):
-            print(f"Skipping (target already exists): {item.name}")
-            skipped += 1
+            if stage_duplicate_episode(share, target_folder.name, item, log):
+                moved += 1
+            else:
+                skipped += 1
             continue
 
         item_target_dir.mkdir(exist_ok=True)
@@ -2567,7 +2590,7 @@ def preview_video_files(folder, media_type, final_name, api_key, tmdb_id=None):
         preview_consolidated_subtitles(subtitles, folder / target_season_folder / item.name)
 
 
-def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=None, folder_year=None):
+def rename_video_files(share, folder, media_type, final_name, log, api_key, tmdb_id=None, folder_year=None):
     renamed = 0
     skipped = 0
 
@@ -2646,8 +2669,10 @@ def rename_video_files(folder, media_type, final_name, log, api_key, tmdb_id=Non
             renamed += rename_consolidated_subtitles(subtitles, item, log)
             continue
         if dest.exists() and not same_existing_path(dest, item):
-            print(f"Skipping (target already exists): {item.name}")
-            skipped += 1
+            if stage_duplicate_episode(share, folder.name, item, log):
+                renamed += 1
+            else:
+                skipped += 1
             continue
 
         season_dir.mkdir(exist_ok=True)
@@ -3057,7 +3082,7 @@ def run_cleanup(args, log):
     log.set_label(f"{Path(share).name}-cleanup")
 
     print()
-    print("Performing action: Cleanup")
+    print(f"Performing action: Cleanup{' (Test Mode)' if args.test is not None else ''}")
 
     delete_folder_names = load_delete_folder_names()
     delete_file_patterns = load_delete_file_patterns()
@@ -3382,9 +3407,11 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args, nee
             continue
 
         if dest.exists() and not same_existing_path(dest, item):
-            print(f"Skipping (target already exists): {item.name}")
-            files_skipped += 1
-            needs_attention.append(("Target already exists", item.name))
+            if stage_duplicate_episode(share, folder_name, item, log):
+                files_renamed += 1
+            else:
+                files_skipped += 1
+                needs_attention.append(("Error", f"{item.name} (could not move to {DUPLICATES_FOLDER_NAME}/)"))
             continue
 
         (target_folder / target_season_folder_name).mkdir(parents=True, exist_ok=True)
@@ -3570,7 +3597,7 @@ def run_scan(args, log):
     media_type = determine_media_type(share, getattr(args, "type", None))
 
     print()
-    print("Performing action: Rename")
+    print(f"Performing action: Rename{' (Test Mode)' if args.test is not None else ''}")
     print()
     print(f"Scanning: {share}")
     print()
@@ -3696,7 +3723,7 @@ def run_scan(args, log):
                 folders_skipped += 1
                 continue
 
-            merged, merge_skipped = merge_duplicate_show_folder(folder, new_folder, raw_name, final_name, log)
+            merged, merge_skipped = merge_duplicate_show_folder(share, folder, new_folder, raw_name, final_name, log)
             files_renamed += merged
             files_skipped += merge_skipped
             folders_renamed += 1
@@ -3745,11 +3772,11 @@ def run_scan(args, log):
 
         if media_type == "tv":
             organize_season_folders(folder, log)
-            sub_renamed, sub_skipped = rename_season_folder_files(folder, final_name, log, api_key, match_id)
+            sub_renamed, sub_skipped = rename_season_folder_files(share, folder, final_name, log, api_key, match_id)
             files_renamed += sub_renamed
             files_skipped += sub_skipped
 
-        renamed, skipped = rename_video_files(folder, media_type, final_name, log, api_key, match_id, match_year)
+        renamed, skipped = rename_video_files(share, folder, media_type, final_name, log, api_key, match_id, match_year)
         files_renamed += renamed
         files_skipped += skipped
 
