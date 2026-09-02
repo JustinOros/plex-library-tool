@@ -201,7 +201,7 @@ def normalize_special_chars(name):
 
 def clean_name(name):
     name = normalize_special_chars(name)
-    name = re.sub(r'[./-]+', ' ', name)
+    name = re.sub(r'[.,/-]+', ' ', name)
     return re.sub(r'[^A-Za-z0-9 ]', '', name)
 
 
@@ -215,7 +215,7 @@ def clean_and_squeeze(name):
 
 def clean_name_keep_hyphens(name):
     name = normalize_special_chars(name)
-    name = re.sub(r'[./]+', ' ', name)
+    name = re.sub(r'[.,/]+', ' ', name)
     return re.sub(r'[^A-Za-z0-9 \-]', '', name)
 
 
@@ -2712,6 +2712,91 @@ def rename_video_files(share, folder, media_type, final_name, log, api_key, tmdb
     return renamed, skipped
 
 
+def handle_movie_bundle_folder(share, folder, api_key, log, test_mode, args, needs_attention):
+    videos = list_video_files(folder)
+    per_file = []
+    for video in videos:
+        year = extract_year(video.stem)
+        final_name, match_year, match_id, error = lookup_folder(api_key, "movie", video.stem, year)
+        per_file.append((video, final_name, match_year, match_id, error))
+
+    distinct_ids = {m[3] for m in per_file if m[3] is not None}
+    if len(distinct_ids) < 2:
+        return None
+
+    vprint(f"  {folder.name} looks like a multi-movie bundle ({len(distinct_ids)} distinct titles found), splitting")
+
+    folders_created = 0
+    files_moved = 0
+    files_skipped = 0
+
+    for video, final_name, match_year, match_id, error in per_file:
+        if error or not final_name:
+            print(f"No TMDb match for bundle member, leaving in place: {video.name}")
+            needs_attention.append(("No TMDb match", f"{folder.name}/{video.name}"))
+            files_skipped += 1
+            continue
+
+        target_folder_name = folder_target_name("movie", final_name, match_year, video.name)
+        target_folder = Path(share) / target_folder_name
+        new_video_name = movie_file_name(final_name, video.suffix.lstrip("."), detect_resolution(video.name))
+        own_subs = gather_video_subtitles(video, True)
+        dest_video = target_folder / new_video_name
+
+        if test_mode:
+            print(f"Would split bundle member: {folder.name}/{video.name} -> {target_folder_name}/{new_video_name}")
+            preview_consolidated_subtitles(own_subs, dest_video)
+            files_moved += 1
+            continue
+
+        if not is_file_stable(video):
+            print(f"Skipping (still being copied): {video.name}")
+            files_skipped += 1
+            continue
+
+        if not args.yes and not confirm(f"Split '{video.name}' out of bundle '{folder.name}' into '{target_folder_name}'?"):
+            print(f"Skipped: {video.name}")
+            files_skipped += 1
+            continue
+
+        target_folder.mkdir(parents=True, exist_ok=True)
+
+        if dest_video.exists() and not same_existing_path(dest_video, video):
+            staged_dest = duplicate_file_staging_path(share, target_folder_name, video)
+            ok, err = safe_move(video, staged_dest)
+            if ok:
+                log.record(video, staged_dest)
+                print(f"Moved duplicate bundle member to {DUPLICATES_FOLDER_NAME}/: {video.name}")
+                files_moved += 1
+            else:
+                print(f"Skipping (could not move to {DUPLICATES_FOLDER_NAME}/: {err}): {video.name}")
+                files_skipped += 1
+            continue
+
+        ok, err = safe_rename(video, dest_video)
+        if not ok:
+            print(f"Skipping ({err}): {video.name}")
+            files_skipped += 1
+            needs_attention.append(("Error", f"{video.name} ({err})"))
+            continue
+        log.record(video, dest_video)
+        print(f"Split bundle member: {folder.name}/{video.name} -> {target_folder_name}/{new_video_name}")
+        folders_created += 1
+        files_moved += 1
+        files_moved += rename_consolidated_subtitles(own_subs, dest_video, log)
+
+    if not test_mode:
+        try:
+            if folder.exists() and is_effectively_empty(folder):
+                purge_ignorable_junk(folder)
+                folder.rmdir()
+                print(f"Removed empty bundle folder: {folder.name}")
+        except OSError:
+            pass
+
+    return folders_created, files_moved, files_skipped
+
+
 def compute_folder_signature(folder):
     entries = []
     for root, dirs, files in os.walk(folder):
@@ -3705,6 +3790,15 @@ def run_scan(args, log):
             final_name, match_year, match_id, error = lookup_folder(api_key, media_type, raw_name, hint_year)
 
         if error:
+            if media_type == "movie" and len(list_video_files(folder)) >= 2:
+                bundle_result = handle_movie_bundle_folder(share, folder, api_key, log, test_mode, args, needs_attention)
+                if bundle_result is not None:
+                    b_folders, b_moved, b_skipped = bundle_result
+                    folders_renamed += b_folders
+                    files_renamed += b_moved
+                    files_skipped += b_skipped
+                    examples_shown += 1
+                    continue
             print(error)
             examples_shown += 1
             folders_skipped += 1
