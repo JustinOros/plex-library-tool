@@ -854,7 +854,8 @@ def best_match(media_type, results, year, query=None):
             ]
             if near_year_matches:
                 best = max(near_year_matches, key=near_title_similarity)
-                if near_title_similarity(best) >= NEAR_YEAR_MATCH_MIN_SIMILARITY:
+                threshold = YEAR_MATCH_MIN_SIMILARITY if len(near_year_matches) == 1 else NEAR_YEAR_MATCH_MIN_SIMILARITY
+                if near_title_similarity(best) >= threshold:
                     return best
             return None
         if not query_norm:
