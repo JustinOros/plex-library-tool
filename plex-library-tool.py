@@ -813,6 +813,11 @@ def result_year(media_type, result):
     return None
 
 
+def vprint_result_titles(media_type, results):
+    for r in results:
+        vprint(f"    {result_title(media_type, r)!r} ({result_year(media_type, r)}) id={r.get('id')}")
+
+
 YEAR_MATCH_MIN_SIMILARITY = 0.4
 NEAR_YEAR_MAX_DIFF = 1
 NEAR_YEAR_MATCH_MIN_SIMILARITY = 0.85
@@ -980,7 +985,7 @@ JUNK_TOKENS = {
     "webrip", "webdl", "web", "dl", "hdtv", "hdrip", "dvdrip", "dvd",
     "hevc", "x264", "x265", "h264", "h265", "avc", "xvid", "divx",
     "aac", "ac3", "eac3", "dts", "atmos", "ddp", "dd",
-    "proper", "repack", "extended", "unrated", "uncut", "ultimate", "director", "directors", "cut",
+    "proper", "repack", "extended", "unrated", "uncut", "explicit", "ultimate", "director", "directors", "cut",
     "internal", "limited", "theatrical", "multi", "dual", "audio",
     "hdr", "sdr", "4k", "uhd", "10bit", "8bit", "hi10p", "hi444pp",
     "deluxe", "boxset", "box", "set", "extras", "hd",
@@ -1340,6 +1345,7 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
     if err:
         return None, None, None, f"Lookup failed: {raw_name} ({err})"
     vprint(f"  TMDb returned {len(results)} result(s)")
+    vprint_result_titles(media_type, results)
 
     match = best_match(media_type, results, year, query)
 
@@ -1352,11 +1358,26 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
             hyphen_results, hyphen_err = tmdb_search(api_key, media_type, quoted_query)
             if not hyphen_err:
                 vprint(f"  TMDb returned {len(hyphen_results)} result(s)")
+                vprint_result_titles(media_type, hyphen_results)
                 hyphen_match = best_match(media_type, hyphen_results, year, hyphen_query)
                 if hyphen_match:
                     match = hyphen_match
                     results = hyphen_results
                     query = hyphen_query
+
+    if not match and re.search(r'\band\b', query, re.IGNORECASE):
+        and_query = squeeze_spaces(re.sub(r'\band\b', '&', query, flags=re.IGNORECASE))
+        if and_query != query:
+            vprint(f"  No match, retrying with 'and' as '&' (TMDb often stores the symbol): query={and_query!r}")
+            and_results, and_err = tmdb_search(api_key, media_type, and_query)
+            if not and_err:
+                vprint(f"  TMDb returned {len(and_results)} result(s)")
+                vprint_result_titles(media_type, and_results)
+                and_match = best_match(media_type, and_results, year, and_query)
+                if and_match:
+                    match = and_match
+                    results = and_results
+                    query = and_query
 
     if not match and year:
         broadened_words = query.split()
@@ -1368,6 +1389,7 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
             if broad_err:
                 break
             vprint(f"  TMDb returned {len(broad_results)} result(s)")
+            vprint_result_titles(media_type, broad_results)
             fuzzy = fuzzy_title_match(media_type, broad_results, broadened_query, year)
             if fuzzy:
                 fuzzy_match, ratio = fuzzy
@@ -1385,6 +1407,7 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
             if broad_err:
                 break
             vprint(f"  TMDb returned {len(broad_results)} result(s)")
+            vprint_result_titles(media_type, broad_results)
             candidate = best_match(media_type, broad_results, None, broadened_query)
             if candidate:
                 vprint(f"  Best match: {result_title(media_type, candidate)!r} (id={candidate.get('id')})")
@@ -1398,6 +1421,7 @@ def lookup_folder(api_key, media_type, raw_name, hint_year=None):
             numeric_results, numeric_err = tmdb_search(api_key, media_type, numeric_stripped_query)
             if not numeric_err:
                 vprint(f"  TMDb returned {len(numeric_results)} result(s)")
+                vprint_result_titles(media_type, numeric_results)
                 fuzzy = fuzzy_title_match(media_type, numeric_results, query, year)
                 if fuzzy:
                     fuzzy_match, ratio = fuzzy
