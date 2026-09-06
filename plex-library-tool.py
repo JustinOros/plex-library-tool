@@ -843,6 +843,10 @@ def best_match(media_type, results, year, query=None):
             if not query_norm:
                 return None
 
+            exact_matches = [r for r in results if is_exact_title(r)]
+            if len(exact_matches) == 1:
+                return exact_matches[0]
+
             def near_title_similarity(r):
                 return difflib.SequenceMatcher(
                     None, query_norm, clean_and_squeeze(result_title(media_type, r) or "").lower()
