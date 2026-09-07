@@ -903,21 +903,20 @@ def fuzzy_title_match(media_type, results, query, year):
         return None
 
     query_norm = clean_and_squeeze(query).lower()
-    best = None
-    best_ratio = 0.0
+    year_matches = [r for r in results if result_year(media_type, r) == year]
+    if not year_matches:
+        return None
 
-    for r in results:
-        if result_year(media_type, r) != year:
-            continue
+    def title_similarity(r):
         title_norm = clean_and_squeeze(result_title(media_type, r) or "").lower()
         if not title_norm:
-            continue
-        ratio = difflib.SequenceMatcher(None, query_norm, title_norm).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best = r
+            return 0.0
+        return difflib.SequenceMatcher(None, query_norm, title_norm).ratio()
 
-    if best is not None and best_ratio >= FUZZY_TITLE_MATCH_THRESHOLD:
+    best = max(year_matches, key=title_similarity)
+    best_ratio = title_similarity(best)
+    threshold = YEAR_MATCH_MIN_SIMILARITY if len(year_matches) == 1 else FUZZY_TITLE_MATCH_THRESHOLD
+    if best_ratio >= threshold:
         return best, best_ratio
     return None
 
@@ -991,7 +990,7 @@ JUNK_TOKENS = {
     "bluray", "blueray", "bdrip", "brrip", "bdremux", "remux",
     "webrip", "webdl", "web", "dl", "hdtv", "hdrip", "dvdrip", "dvd",
     "hevc", "x264", "x265", "h264", "h265", "avc", "xvid", "divx",
-    "aac", "ac3", "eac3", "dts", "atmos", "ddp", "dd",
+    "aac", "ac3", "eac3", "dts", "atmos", "ddp", "dd", "rifftrax",
     "proper", "repack", "extended", "unrated", "uncut", "explicit", "ultimate", "director", "directors", "cut",
     "internal", "limited", "theatrical", "multi", "dual", "audio",
     "hdr", "sdr", "4k", "uhd", "10bit", "8bit", "hi10p", "hi444pp",
@@ -1073,6 +1072,7 @@ RELEASE_GROUP_SUFFIX_PATTERN = re.compile(
 )
 
 AUDIO_CHANNELS_PATTERN = re.compile(r'(?<![0-9])\d\.\d(?![0-9])')
+AUDIO_CHANNEL_COUNT_PATTERN = re.compile(r'\b\d(?:ch|CH)\b')
 AUDIO_CODEC_CHANNELS_PATTERN = re.compile(
     r'\b(DDP?|EAC3|AC3|TrueHD|Atmos|DTS(?:-HD)?|FLAC|AAC)[.\s]?\d(?:[.\s]\d)?\b',
     re.IGNORECASE,
@@ -1155,6 +1155,7 @@ def build_query(raw_name, year, keep_hyphens=False):
     raw_name = VIDEO_CODEC_SPACED_PATTERN.sub(r'H\1', raw_name)
     raw_name = AUDIO_CODEC_CHANNELS_PATTERN.sub(' ', raw_name)
     raw_name = AUDIO_CHANNELS_PATTERN.sub(' ', raw_name)
+    raw_name = AUDIO_CHANNEL_COUNT_PATTERN.sub(' ', raw_name)
     raw_name = strip_junk_trailing_paren(raw_name)
 
     match = RELEASE_GROUP_SUFFIX_PATTERN.search(raw_name)
