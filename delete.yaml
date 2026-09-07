@@ -2,7 +2,7 @@
 #
 # Configures what cleanup (-c) moves to a local trash folder. Nothing here
 # is deleted permanently -- matched items are moved to a .trash folder next
-# to the script, and every move can be undone. All three sections below are
+# to the script, and every move can be undone. All sections below are
 # optional and independent; enable only the ones you want.
 #
 # ============================================================================
@@ -23,21 +23,22 @@
 #   moved to trash, along with everything inside it. There is no
 #   confirmation beyond the normal cleanup run prompts, so double check
 #   this list before running for real.
-#
-# Uncomment and edit the list below to enable:
-#
-# folders:
-#   - Screens
-#   - Featurettes
-#   - Extras
-#   - Sample
-#   - Samples
-#   - Behind the Scenes
-#   - Deleted Scenes
-#   - Trailers
-#   - Interviews
-#   - Bonus
-#
+
+folders:
+  - Screens
+  - Featurettes
+  - Extras
+  - Sample
+  - Samples
+  - Soundtrack
+  - Behind the Scenes
+  - Deleted Scenes
+  - Trailers
+  - Interviews
+  - Bonus
+  - "* torrent"
+  - "* torrents"
+
 # ============================================================================
 # files
 # ============================================================================
@@ -63,20 +64,39 @@
 #       the "subtitles:" section below is the friendlier, language-agnostic
 #       way to protect or target any language, including your own.
 # - Video file extensions (mp4, mkv, avi, etc.) are never deleted by
-#   cleanup, even if a pattern here would otherwise match them.
+#   cleanup, even if a pattern here would otherwise match them. Use
+#   "sample_videos:" below for the one exception to that.
+
+files:
+   - "*.txt"
+   - "*.nfo"
+   - "*.jpg"
+   - "*.jpeg"
+   - "*.png"
+   - "*.smi"
+   - "*.ico"
+   - "*.url"
+   - "*.sfv"
+   - "*.part"
+
+# ============================================================================
+# sample_videos
+# ============================================================================
 #
-# Uncomment and edit the list below to enable:
+# Whether to move loose sample video files to trash during cleanup.
 #
-# files:
-#   - "*.txt"
-#   - "*.nfo"
-#   - "*.jpg"
-#   - "*.jpeg"
-#   - "*.png"
-#   - "*.ico"
-#   - "*.url"
-#   - "*.sfv"
-#
+# - Video file extensions (mp4, mkv, avi, etc.) are otherwise never touched
+#   by cleanup, even under "files:" above -- this is the one exception.
+# - Only matches a video file with the whole word "sample" in its name
+#   (e.g. "Sample.mkv", "Movie-Sample.avi", "Movie.sample.mp4"), so it
+#   won't catch a real video that just happens to contain "sample" as part
+#   of a longer word.
+# - This only catches loose sample files sitting next to the real video.
+#   A sample shipped inside its own "Sample" folder is already handled by
+#   adding "Sample" to the "folders:" list above.
+
+sample_videos: true
+
 # ============================================================================
 # subtitles
 # ============================================================================
@@ -119,39 +139,6 @@
 #   word frequency for Latin-script languages. This is a best-effort
 #   heuristic for .srt content, not a guarantee, and always errs toward
 #   leaving a file alone if the result is unclear.
-#
-# Uncomment and edit to enable (replace "Spanish" with your own primary
-# language, or whichever language you want to keep):
-#
-# subtitles:
-#   - "!Spanish"
-
-folders:
-  - Screens
-  - Featurettes
-  - Extras
-  - Sample
-  - Samples
-  - Soundtrack
-  - Behind the Scenes
-  - Deleted Scenes
-  - Trailers
-  - Interviews
-  - Bonus
-  - "* torrent"
-  - "* torrents"
-
-files:
-   - "*.txt"
-   - "*.nfo"
-   - "*.jpg"
-   - "*.jpeg"
-   - "*.png"
-   - "*.smi"
-   - "*.ico"
-   - "*.url"
-   - "*.sfv"
-   - "*.part"
 
 subtitles:
   - "!English"

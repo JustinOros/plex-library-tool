@@ -57,6 +57,8 @@ VIDEO_EXTENSIONS = {
     "mp4", "mkv", "avi", "mov", "wmv", "m4v", "mpg", "mpeg", "flv", "ts", "m2ts", "webm",
 }
 
+SAMPLE_VIDEO_PATTERN = re.compile(r'(?<![A-Za-z0-9])sample(?![A-Za-z0-9])', re.IGNORECASE)
+
 SUBTITLE_EXTENSIONS = {"srt", "sub"}
 SUBTITLE_FOLDER_NAMES = {"subs", "subtitles"}
 
@@ -2853,7 +2855,7 @@ def save_scan_cache(cache):
     CACHE_FILE.write_text(json.dumps(cache, indent=2))
 
 
-def compute_cleanup_rules_signature(delete_folder_names, delete_file_patterns, keep_languages, delete_languages):
+def compute_cleanup_rules_signature(delete_folder_names, delete_file_patterns, keep_languages, delete_languages, sample_videos_enabled=False):
     hasher = hashlib.sha256()
     for name in sorted(delete_folder_names):
         hasher.update(f"f:{name.lower()}\n".encode("utf-8"))
@@ -2863,6 +2865,7 @@ def compute_cleanup_rules_signature(delete_folder_names, delete_file_patterns, k
         hasher.update(f"k:{lang}\n".encode("utf-8"))
     for lang in sorted(delete_languages or []):
         hasher.update(f"d:{lang}\n".encode("utf-8"))
+    hasher.update(f"s:{bool(sample_videos_enabled)}\n".encode("utf-8"))
     return hasher.hexdigest()
 
 
@@ -2891,6 +2894,23 @@ def parse_simple_yaml_list(path, key):
 
 def load_delete_folder_names():
     return [name.lower() for name in parse_simple_yaml_list(DELETE_FILE, "folders")]
+
+
+def parse_simple_yaml_bool(path, key):
+    if not path.exists():
+        return False
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(f"{key}:"):
+            value = line.split(":", 1)[1].strip().strip('"').strip("'").lower()
+            return value in ("true", "yes", "1", "on")
+    return False
+
+
+def load_delete_sample_videos_flag():
+    return parse_simple_yaml_bool(DELETE_FILE, "sample_videos")
 
 
 TRAILING_WRAPPER_CHARS = ")]}'\""
@@ -3111,7 +3131,7 @@ def matches_file_name(name, patterns, path=None):
     return True
 
 
-def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_languages=None, delete_languages=None, unchanged_folder_names=None):
+def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_languages=None, delete_languages=None, unchanged_folder_names=None, sample_videos_enabled=False):
     targets = []
     keep_languages = keep_languages or set()
     delete_languages = delete_languages or set()
@@ -3146,6 +3166,10 @@ def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_
             elif entry.is_file():
                 ext = entry.suffix.lower().lstrip(".")
                 if ext in VIDEO_EXTENSIONS:
+                    if sample_videos_enabled and SAMPLE_VIDEO_PATTERN.search(entry.stem):
+                        vprint(f"  Match (sample video): {entry}")
+                        targets.append(("file", entry))
+                        continue
                     vprint(f"  Skipping (protected video file): {entry}")
                     continue
                 if matches_file_name(entry.name, delete_file_patterns, entry):
@@ -3224,19 +3248,24 @@ def run_cleanup(args, log):
     delete_folder_names = load_delete_folder_names()
     delete_file_patterns = load_delete_file_patterns()
     keep_languages, delete_languages = load_delete_subtitle_rules()
+    sample_videos_enabled = load_delete_sample_videos_flag()
     vprint(f"Loaded {len(delete_folder_names)} folder pattern(s) from {DELETE_FILE.name}: {delete_folder_names}")
     vprint(f"Loaded {len(delete_file_patterns)} file pattern(s) from {DELETE_FILE.name}: {delete_file_patterns}")
     vprint(f"Loaded subtitle rules: keep={keep_languages or 'none'}, delete={delete_languages or 'none'}")
+    vprint(f"Sample video cleanup enabled: {sample_videos_enabled}")
 
     has_duplicates_folder = (Path(share) / DUPLICATES_FOLDER_NAME).is_dir()
 
-    if not delete_folder_names and not delete_file_patterns and not keep_languages and not delete_languages and not has_duplicates_folder:
+    if (
+        not delete_folder_names and not delete_file_patterns and not keep_languages
+        and not delete_languages and not has_duplicates_folder and not sample_videos_enabled
+    ):
         print("No cleanup rules configured.")
         print(f"Edit {DELETE_FILE.name} to enable cleanup.")
         return
 
     rules_signature = compute_cleanup_rules_signature(
-        delete_folder_names, delete_file_patterns, keep_languages, delete_languages
+        delete_folder_names, delete_file_patterns, keep_languages, delete_languages, sample_videos_enabled
     )
     cache = load_scan_cache()
     share_key = str(Path(share).resolve())
@@ -3268,7 +3297,8 @@ def run_cleanup(args, log):
     print()
 
     targets = find_cleanup_targets(
-        share, delete_folder_names, delete_file_patterns, keep_languages, delete_languages, unchanged_folder_names
+        share, delete_folder_names, delete_file_patterns, keep_languages, delete_languages,
+        unchanged_folder_names, sample_videos_enabled
     )
     vprint(f"Scan complete. {len(targets)} item(s) matched.")
 
