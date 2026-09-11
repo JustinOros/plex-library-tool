@@ -129,6 +129,7 @@ SEASON_ONLY_PATTERN = re.compile(r'(?<![A-Za-z0-9])[Ss](\d{1,2})')
 
 SEASON_FOLDER_PATTERN = re.compile(r'season\s*0*(\d{1,3})\b', re.IGNORECASE)
 SEASON_FOLDER_CANONICAL_PATTERN = re.compile(r'^[Ss](\d{1,3})$')
+SPECIALS_FOLDER_PATTERN = re.compile(r'^specials?$', re.IGNORECASE)
 
 EPISODE_ONLY_PATTERN = re.compile(r'\b[Ee](?:p(?:isode)?)?\.?\s*0*(\d{1,3})\b')
 LEADING_NUMBER_PATTERN = re.compile(r'^0*(\d{1,3})[\s._-]')
@@ -294,6 +295,8 @@ def parse_trailing_episode_number(filename):
 
 def parse_season_folder_name(name):
     stripped = name.strip()
+    if SPECIALS_FOLDER_PATTERN.match(stripped):
+        return 0
     m = SEASON_FOLDER_CANONICAL_PATTERN.match(stripped)
     if m:
         return int(m.group(1))
@@ -3720,7 +3723,7 @@ def prefetch_lookups(api_key, media_type, folders):
         for folder in folders:
             raw_name = folder.name
             hint_year = None
-            if extract_year(raw_name) is None:
+            if extract_year(raw_name) is None and media_type == "movie":
                 hint_year = infer_year_from_files(folder)
             futures[executor.submit(_buffered_lookup, api_key, media_type, raw_name, hint_year)] = (folder, hint_year)
 
@@ -3844,7 +3847,7 @@ def run_scan(args, log):
                 vprint(f"  No year in folder name, inferred from files: {hint_year}")
         else:
             hint_year = None
-            if extract_year(raw_name) is None:
+            if extract_year(raw_name) is None and media_type == "movie":
                 hint_year = infer_year_from_files(folder)
                 vprint(f"  No year in folder name, inferred from files: {hint_year}")
             final_name, match_year, match_id, error = lookup_folder(api_key, media_type, raw_name, hint_year)
@@ -4065,9 +4068,6 @@ def check_show_episodes(api_key, show_folder):
             missing[season_number] = sorted(season_missing)
 
     return missing, None
-
-
-SPECIALS_FOLDER_PATTERN = re.compile(r'^specials?$', re.IGNORECASE)
 
 
 def flatten_self_nested_folder(folder, log):

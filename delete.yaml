@@ -30,6 +30,7 @@ folders:
   - Extras
   - Sample
   - Samples
+  - Specials
   - Soundtrack
   - Behind the Scenes
   - Deleted Scenes
@@ -79,6 +80,7 @@ files:
    - "*.sfv"
    - "*.part"
    - "*.par2"
+   - "*.website"
 
 # ============================================================================
 # sample_videos
