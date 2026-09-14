@@ -119,7 +119,7 @@ def is_effectively_empty(folder):
     return all(entry.is_file() and is_ignorable_junk_file(entry) for entry in entries)
 
 SEASON_EP_PATTERNS = [
-    (re.compile(r'[Ss](\d{1,2})[Ee](\d{1,2})'), 'E'),
+    (re.compile(r'[Ss](\d{1,2})[Ee](\d{1,3})'), 'E'),
     (re.compile(r'[Ss](\d{1,2})[Xx](\d{1,2})'), 'X'),
     (re.compile(r'[Ss](\d{1,2})[Mm](\d{1,2})'), 'M'),
     (re.compile(r'(?<![A-Za-z0-9])(\d{1,2})[xX](\d{1,2})(?![A-Za-z0-9])'), 'E'),
@@ -246,6 +246,8 @@ def parse_season_episode(filename):
         if m:
             season = int(m.group(1))
             episode = int(m.group(2))
+            if marker == 'E' and episode >= 100 and episode // 100 == season:
+                episode = episode % 100
             return season, episode, marker
 
     if parse_season_only(filename) is None and parse_episode_only(filename) is None:
@@ -2118,6 +2120,11 @@ def resolve_season_folder_file(item, season, api_key=None, tmdb_id=None):
     if se:
         return se[0], se[1], se[2]
 
+    if season is not None:
+        legacy = LEGACY_SEE_PATTERN.search(item.name)
+        if legacy and int(legacy.group(1)) == season:
+            return season, int(legacy.group(2)), 'E'
+
     file_season = parse_season_only(item.name)
     episode = parse_episode_only(item.name)
     if episode is None:
@@ -2777,6 +2784,11 @@ def handle_movie_bundle_folder(share, folder, api_key, log, test_mode, args, nee
         new_video_name = movie_file_name(final_name, video.suffix.lstrip("."), detect_resolution(video.name))
         own_subs = gather_video_subtitles(video, True)
         dest_video = target_folder / new_video_name
+
+        if dest_video == video:
+            print(f"Skipping renaming (already correctly named and placed): {video.name}")
+            files_moved += rename_consolidated_subtitles(own_subs, video, log)
+            continue
 
         if test_mode:
             print(f"Would split bundle member: {folder.name}/{video.name} -> {target_folder_name}/{new_video_name}")
@@ -3841,6 +3853,16 @@ def run_scan(args, log):
         print(f"[{index}/{total_folders}] {raw_name}")
         vprint(f"Processing folder: {folder}")
 
+        if media_type == "movie" and len(list_video_files(folder)) >= 2:
+            bundle_result = handle_movie_bundle_folder(share, folder, api_key, log, test_mode, args, needs_attention)
+            if bundle_result is not None:
+                b_folders, b_moved, b_skipped = bundle_result
+                folders_renamed += b_folders
+                files_renamed += b_moved
+                files_skipped += b_skipped
+                examples_shown += 1
+                continue
+
         if folder in lookup_cache:
             hint_year, (final_name, match_year, match_id, error) = lookup_cache[folder]
             if hint_year is not None:
@@ -3853,15 +3875,6 @@ def run_scan(args, log):
             final_name, match_year, match_id, error = lookup_folder(api_key, media_type, raw_name, hint_year)
 
         if error:
-            if media_type == "movie" and len(list_video_files(folder)) >= 2:
-                bundle_result = handle_movie_bundle_folder(share, folder, api_key, log, test_mode, args, needs_attention)
-                if bundle_result is not None:
-                    b_folders, b_moved, b_skipped = bundle_result
-                    folders_renamed += b_folders
-                    files_renamed += b_moved
-                    files_skipped += b_skipped
-                    examples_shown += 1
-                    continue
             print(error)
             examples_shown += 1
             folders_skipped += 1
