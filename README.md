@@ -17,7 +17,7 @@ This guide assumes you've never used Python or GitHub before. If you already kno
 - Detects a duplicate movie folder (a re-download that resolves to a movie you already have) and moves it into a `DUPLICATES` folder at the top of the share, rather than overwriting or leaving it loose. Cleanup (`-c`) picks up `DUPLICATES` and moves it to trash the same as anything else
 - Detects a movie "bundle" folder (a box set, trilogy, or franchise rip with several different movies in one folder) and splits each movie out into its own correctly named folder, moving its matching subtitles along with it. This checks every movie folder with more than one video file, even if the folder's own name already matches a movie (e.g. a franchise folder named after just the first film)
 - Checks your organized TV shows against TMDb's episode list and reports any already-aired episodes you're missing (`-e`), without changing anything
-- Suggests new movies or TV shows based on what's already in your library, using TMDb recommendations (`-s` / `--suggestions [N]`, defaults to 5). Remembers what it's already suggested so it won't repeat itself; clear that history with `--clear-suggestions`
+- Suggests new movies or TV shows based on what's already in your library, using TMDb recommendations (`-s` / `--suggestions [N]`, defaults to 5). Pass a genre list instead of a number (e.g. `--suggestions action,sci-fi`) to suggest purely from that genre instead of basing it on your library. Remembers what it's already suggested so it won't repeat itself; clear that history with `--clear-suggestions`
 - Understands anime-style absolute episode numbering (episodes numbered 1, 2, 3... straight through instead of per-season) when TMDb has that show's episode order data, converting them to the correct season/episode automatically
 - Finds subtitle files, figures out which one matches your primary language (by filename, and by reading the file's content/metadata if the filename doesn't say), and renames it to match the video. Defaults to English, but follows whatever language you've set for TMDb results (see [Non-English users](#non-english-users)).
 - Optionally cleans up junk files/folders (samples, `.nfo`, `.txt`, screenshots, unwanted-language subtitles) into a local trash folder. Nothing is deleted permanently, and every cleanup can be reversed.
@@ -146,7 +146,7 @@ python plex-library-tool.py -r "/path/to/your/Movies" -t
 | `-r`, `--rename [PATH]` | Scan and rename a share. Pass a path to skip the share-selection prompt. |
 | `-c`, `--cleanup [PATH]` | Move junk files/folders (per `delete.yaml`) to a local trash folder. |
 | `-e`, `--episodes [PATH]` | Check TV shows against TMDb's episode list and report any missing (already-aired) episodes. Read-only, makes no changes. |
-| `-s`, `--suggestions [N]` | Suggest N new movies or TV shows (default 5) based on what's already in your library, via TMDb recommendations. Read-only, makes no changes. |
+| `-s`, `--suggestions [N\|genre1,genre2]` | Suggest N new movies or TV shows (default 5) based on what's already in your library, via TMDb recommendations. Pass a genre list instead of a number to suggest purely from that genre. Read-only, makes no changes. |
 | `--clear-suggestions` | Clear the suggestions history so previously suggested titles can come up again. |
 | `-t`, `--test [N]` | Preview only. No changes are made. Optionally limit how many folders are shown. |
 | `-y`, `--yes` | Don't ask for confirmation before each rename. |

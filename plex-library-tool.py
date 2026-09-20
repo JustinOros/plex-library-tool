@@ -55,6 +55,42 @@ TV_GENRES = {
     10766: "Soap", 10767: "Talk", 10768: "War & Politics", 37: "Western",
 }
 
+GENRE_NAME_ALIASES = {
+    "scifi": "science fiction",
+    "sci fi": "science fiction",
+    "sciencefiction": "science fiction",
+}
+
+
+def normalize_genre_key(name):
+    return re.sub(r'[^a-z0-9]', '', name.lower())
+
+
+def resolve_genre_ids(genre_map, raw_names):
+    normalized_map = {}
+    for gid, gname in genre_map.items():
+        normalized_map[normalize_genre_key(gname)] = gid
+
+    resolved = []
+    unresolved = []
+    for raw in raw_names:
+        key = normalize_genre_key(raw)
+        gid = normalized_map.get(key)
+        if gid is None:
+            gid = next((v for k, v in normalized_map.items() if key and (key in k or k in key)), None)
+        if gid is None:
+            alias = GENRE_NAME_ALIASES.get(key)
+            if alias:
+                alias_key = normalize_genre_key(alias)
+                gid = normalized_map.get(alias_key)
+                if gid is None:
+                    gid = next((v for k, v in normalized_map.items() if alias_key in k or k in alias_key), None)
+        if gid is not None and gid not in resolved:
+            resolved.append(gid)
+        elif gid is None:
+            unresolved.append(raw)
+    return resolved, unresolved
+
 VERBOSE = False
 
 _vprint_local = threading.local()
@@ -589,6 +625,13 @@ def normalize_media_type_arg(value):
     raise argparse.ArgumentTypeError(f"Invalid type: {value!r}. Use 'movies' or 'tv'.")
 
 
+def parse_suggestions_arg(value):
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
 def determine_media_type(share, override=None):
     if override:
         label = "Movies" if override == "movie" else "TV Shows"
@@ -638,6 +681,34 @@ def tmdb_related(api_key, media_type, tmdb_id, kind="recommendations"):
 
     section = "movie" if media_type == "movie" else "tv"
     url = f"{TMDB_BASE}/{section}/{tmdb_id}/{kind}?{urllib.parse.urlencode(params)}"
+
+    headers = {"Authorization": f"Bearer {api_key}"} if v4 else {}
+    req = urllib.request.Request(url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        return []
+
+    return data.get("results", [])
+
+
+def tmdb_discover(api_key, media_type, extra_params, page=1):
+    v4 = is_v4_token(api_key)
+
+    params = {
+        "language": get_tmdb_language(),
+        "sort_by": "popularity.desc",
+        "vote_count.gte": 50,
+        "page": page,
+    }
+    params.update(extra_params)
+    if not v4:
+        params["api_key"] = api_key
+
+    section = "movie" if media_type == "movie" else "tv"
+    url = f"{TMDB_BASE}/discover/{section}?{urllib.parse.urlencode(params)}"
 
     headers = {"Authorization": f"Bearer {api_key}"} if v4 else {}
     req = urllib.request.Request(url, headers=headers)
@@ -4550,33 +4621,7 @@ def resolve_suggestions_library_index(share, media_type, api_key):
     return index
 
 
-def run_suggestions(args):
-    api_key = get_api_key()
-    get_tmdb_language()
-
-    share = resolve_share(None)
-    media_type = determine_media_type(share, getattr(args, "type", None))
-
-    count = args.suggestions if isinstance(args.suggestions, int) and args.suggestions > 0 else DEFAULT_SUGGESTIONS_COUNT
-
-    print()
-    print(f"Performing action: Suggestions ({'Movies' if media_type == 'movie' else 'TV Shows'})")
-    print()
-    print(f"Scanning: {share}")
-    print()
-
-    index = resolve_suggestions_library_index(share, media_type, api_key)
-    owned_ids = {int(v["id"]) for v in index.values() if v.get("id")}
-
-    if not owned_ids:
-        print("No matched titles found in this library yet. Run a rename scan first.")
-        return
-
-    print(f"Library has {len(owned_ids)} matched title(s) to base suggestions on.")
-
-    suggestions_cache = load_suggestions_cache()
-    already_suggested = {int(k) for k in suggestions_cache.get(media_type, {}).keys()}
-
+def gather_recommendation_candidates(api_key, media_type, owned_ids, already_suggested):
     seed_ids = list(owned_ids)
     random.shuffle(seed_ids)
     seed_ids = seed_ids[:SUGGESTION_SEED_SAMPLE_SIZE]
@@ -4601,6 +4646,78 @@ def run_suggestions(args):
                     continue
                 entry = candidates.setdefault(rid, {"data": r, "score": 0})
                 entry["score"] += 1
+    return candidates
+
+
+def gather_genre_candidates(api_key, media_type, genre_ids, owned_ids, already_suggested, target_count):
+    with_genres = "|".join(str(g) for g in genre_ids)
+    candidates = {}
+    page = 1
+    max_pages = 5
+    while len(candidates) < target_count * 3 and page <= max_pages:
+        results = tmdb_discover(api_key, media_type, {"with_genres": with_genres}, page=page)
+        if not results:
+            break
+        for r in results:
+            rid = r.get("id")
+            if not rid or rid in owned_ids or rid in already_suggested or rid in candidates:
+                continue
+            candidates[rid] = {"data": r, "score": 0}
+        page += 1
+    return candidates
+
+
+def run_suggestions(args):
+    api_key = get_api_key()
+    get_tmdb_language()
+
+    share = resolve_share(None)
+    media_type = determine_media_type(share, getattr(args, "type", None))
+    genre_map = MOVIE_GENRES if media_type == "movie" else TV_GENRES
+
+    genre_names = None
+    count = DEFAULT_SUGGESTIONS_COUNT
+    if isinstance(args.suggestions, int):
+        count = args.suggestions if args.suggestions > 0 else DEFAULT_SUGGESTIONS_COUNT
+    elif isinstance(args.suggestions, str):
+        genre_names = [g.strip() for g in args.suggestions.split(",") if g.strip()]
+
+    genre_ids = []
+    if genre_names:
+        genre_ids, unresolved = resolve_genre_ids(genre_map, genre_names)
+        if unresolved:
+            print(f"Unrecognized genre(s): {', '.join(unresolved)}")
+        if not genre_ids:
+            valid = ", ".join(sorted(genre_map.values()))
+            print(f"No valid genres recognized. Available genres: {valid}")
+            return
+
+    print()
+    label = "Movies" if media_type == "movie" else "TV Shows"
+    if genre_ids:
+        label += f" ({', '.join(genre_map[g] for g in genre_ids)})"
+    print(f"Performing action: Suggestions ({label})")
+    print()
+    print(f"Scanning: {share}")
+    print()
+
+    index = resolve_suggestions_library_index(share, media_type, api_key)
+    owned_ids = {int(v["id"]) for v in index.values() if v.get("id")}
+
+    if not owned_ids and not genre_ids:
+        print("No matched titles found in this library yet. Run a rename scan first.")
+        return
+
+    if owned_ids:
+        print(f"Library has {len(owned_ids)} matched title(s).")
+
+    suggestions_cache = load_suggestions_cache()
+    already_suggested = {int(k) for k in suggestions_cache.get(media_type, {}).keys()}
+
+    if genre_ids:
+        candidates = gather_genre_candidates(api_key, media_type, genre_ids, owned_ids, already_suggested, count)
+    else:
+        candidates = gather_recommendation_candidates(api_key, media_type, owned_ids, already_suggested)
 
     if not candidates:
         print("No new suggestions found. Try again later, or clear your suggestions history with --clear-suggestions.")
@@ -4613,7 +4730,6 @@ def run_suggestions(args):
     )
     chosen = ranked[:count]
 
-    genre_map = MOVIE_GENRES if media_type == "movie" else TV_GENRES
     newly_suggested = {}
 
     for c in chosen:
@@ -4622,12 +4738,12 @@ def run_suggestions(args):
         title = r.get("title") or r.get("name") or "Unknown"
         date = r.get("release_date") or r.get("first_air_date") or ""
         year = date[:4] if date else "----"
-        genre_names = [genre_map.get(gid, str(gid)) for gid in r.get("genre_ids", [])]
+        item_genre_names = [genre_map.get(gid, str(gid)) for gid in r.get("genre_ids", [])]
         score = round((r.get("vote_average") or 0) * 10)
         overview = r.get("overview") or "No overview available."
 
         print(f"Name: {title} ({year})")
-        print(f"Genre: {', '.join(genre_names) if genre_names else 'Unknown'}")
+        print(f"Genre: {', '.join(item_genre_names) if item_genre_names else 'Unknown'}")
         print(f"Score: {score}%")
         print("Overview:")
         print(overview)
@@ -4713,11 +4829,13 @@ def build_parser():
     )
     parser.add_argument(
         "-s", "--suggestions",
-        nargs="?", const=DEFAULT_SUGGESTIONS_COUNT, type=int, default=None, metavar="N",
+        nargs="?", const=DEFAULT_SUGGESTIONS_COUNT, type=parse_suggestions_arg, default=None, metavar="N|genre1,genre2",
         help="Suggest new movies or TV shows based on what's already in your library, using TMDb "
              f"recommendations. Defaults to {DEFAULT_SUGGESTIONS_COUNT} suggestions if N is not given. "
-             "Previously suggested titles are remembered and won't repeat; clear that history with "
-             "--clear-suggestions."
+             "Pass a comma-separated genre list instead of a number (e.g. --suggestions action,sci-fi) "
+             "to suggest purely from that genre, ignoring your library as the basis (still excludes "
+             "titles you already have). Previously suggested titles are remembered and won't repeat; "
+             "clear that history with --clear-suggestions."
     )
     parser.add_argument(
         "--clear-suggestions",
