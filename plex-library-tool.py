@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import random
 import re
 import shutil
 import signal
@@ -36,6 +37,23 @@ DUPLICATES_FOLDER_NAME = "DUPLICATES"
 SERVICE_CONFIG_FILE = SCRIPT_DIR / "service.json"
 SERVICE_LOG_FILE = LOG_DIR / "service.log"
 DEFAULT_SERVICE_INTERVAL = 300
+SUGGESTIONS_CACHE_FILE = SCRIPT_DIR / "suggestions_cache.json"
+DEFAULT_SUGGESTIONS_COUNT = 5
+SUGGESTION_SEED_SAMPLE_SIZE = 25
+
+MOVIE_GENRES = {
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+    99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History",
+    27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance",
+    878: "Science Fiction", 10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+}
+
+TV_GENRES = {
+    10759: "Action & Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+    99: "Documentary", 18: "Drama", 10751: "Family", 10762: "Kids",
+    9648: "Mystery", 10763: "News", 10764: "Reality", 10765: "Sci-Fi & Fantasy",
+    10766: "Soap", 10767: "Talk", 10768: "War & Politics", 37: "Western",
+}
 
 VERBOSE = False
 
@@ -611,6 +629,28 @@ def tmdb_search(api_key, media_type, query):
     return data.get("results", []), None
 
 
+def tmdb_related(api_key, media_type, tmdb_id, kind="recommendations"):
+    v4 = is_v4_token(api_key)
+
+    params = {"language": get_tmdb_language()}
+    if not v4:
+        params["api_key"] = api_key
+
+    section = "movie" if media_type == "movie" else "tv"
+    url = f"{TMDB_BASE}/{section}/{tmdb_id}/{kind}?{urllib.parse.urlencode(params)}"
+
+    headers = {"Authorization": f"Bearer {api_key}"} if v4 else {}
+    req = urllib.request.Request(url, headers=headers)
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        return []
+
+    return data.get("results", [])
+
+
 def tmdb_alternative_titles(api_key, media_type, tmdb_id):
     v4 = is_v4_token(api_key)
 
@@ -957,6 +997,48 @@ def purge_stray_metadata(path):
                     pass
 
 
+def purge_empty_subdirs(path):
+    try:
+        entries = list(Path(path).iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        purge_empty_subdirs(entry)
+        try:
+            if not any(entry.iterdir()):
+                entry.rmdir()
+        except OSError:
+            pass
+
+
+def rmdir_retrying(path, attempts=5, delay=1.0):
+    last_err = None
+    for i in range(attempts):
+        try:
+            path.rmdir()
+            return True, None
+        except OSError as e:
+            last_err = e
+            if i < attempts - 1:
+                time.sleep(delay)
+    return False, str(last_err)
+
+
+def rmtree_retrying(path, attempts=5, delay=1.0):
+    last_err = None
+    for i in range(attempts):
+        try:
+            shutil.rmtree(str(path))
+            return True, None
+        except OSError as e:
+            last_err = e
+            if i < attempts - 1:
+                time.sleep(delay)
+    return False, str(last_err)
+
+
 def safe_move(src, dest):
     try:
         shutil.move(str(src), str(dest))
@@ -964,10 +1046,16 @@ def safe_move(src, dest):
     except OSError as e:
         src_path = Path(src)
         dest_path = Path(dest)
-        if src_path.is_dir() and dest_path.exists():
+        if src_path.is_dir():
             purge_stray_metadata(src_path)
+            purge_empty_subdirs(src_path)
             try:
-                shutil.rmtree(str(src_path))
+                if dest_path.exists():
+                    ok, err = rmtree_retrying(src_path)
+                    if not ok:
+                        raise OSError(err)
+                else:
+                    shutil.move(str(src_path), str(dest_path))
                 return True, None
             except OSError as e2:
                 return False, str(e2)
@@ -3372,6 +3460,21 @@ def run_cleanup(args, log):
                     skipped_files += 1
                 continue
 
+        if kind == "folder" and item.name == DUPLICATES_FOLDER_NAME:
+            purge_stray_metadata(item)
+            purge_empty_subdirs(item)
+            try:
+                is_empty = not any(item.iterdir())
+            except OSError:
+                is_empty = False
+            if is_empty:
+                ok, err = rmdir_retrying(item)
+                if ok:
+                    print(f"Removed empty {DUPLICATES_FOLDER_NAME} folder: {item}")
+                    moved_folders += 1
+                    continue
+                vprint(f"  Could not remove empty {DUPLICATES_FOLDER_NAME} folder yet ({err}), falling back to trash move: {item}")
+
         dest = trash_path_for(share, item, timestamp)
         if dest.exists():
             print(f"Skipping (trash target already exists): {item}")
@@ -4378,6 +4481,171 @@ def run_restore(log_arg):
     print(f"Restored: {restored}, skipped: {skipped}")
 
 
+def load_suggestions_cache():
+    if SUGGESTIONS_CACHE_FILE.exists():
+        try:
+            data = json.loads(SUGGESTIONS_CACHE_FILE.read_text())
+            if isinstance(data, dict):
+                data.setdefault("movie", {})
+                data.setdefault("tv", {})
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"movie": {}, "tv": {}}
+
+
+def save_suggestions_cache(cache):
+    SUGGESTIONS_CACHE_FILE.write_text(json.dumps(cache, indent=2))
+
+
+def run_clear_suggestions():
+    if SUGGESTIONS_CACHE_FILE.exists():
+        SUGGESTIONS_CACHE_FILE.unlink()
+        print("Cleared suggestions history.")
+    else:
+        print("No suggestions history to clear.")
+
+
+def resolve_suggestions_library_index(share, media_type, api_key):
+    share_path = Path(share)
+    folders = sorted(p for p in share_path.iterdir() if is_library_content_folder(p))
+    share_key = str(share_path.resolve())
+
+    cache = load_scan_cache()
+    cache_key = f"suggestions_library::{media_type}::{share_key}"
+    index = cache.get(cache_key)
+    if not isinstance(index, dict):
+        index = {}
+
+    current_names = {f.name for f in folders}
+    index = {name: v for name, v in index.items() if name in current_names}
+
+    to_resolve = [f for f in folders if f.name not in index]
+    if to_resolve:
+        print(f"Resolving {len(to_resolve)} title(s) against TMDb (not cached yet)...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as executor:
+            futures = {}
+            for folder in to_resolve:
+                raw_name = folder.name
+                hint_year = extract_year(raw_name)
+                futures[executor.submit(_buffered_lookup, api_key, media_type, raw_name, hint_year)] = folder
+
+            for future in concurrent.futures.as_completed(futures):
+                folder = futures[future]
+                try:
+                    result, buffer = future.result()
+                except Exception as e:
+                    result, buffer = (None, None, None, f"Lookup failed: {folder.name} ({e})"), []
+                if VERBOSE and buffer:
+                    print(f"-- {folder.name} --")
+                    for line in buffer:
+                        print(line)
+                final_name, match_year, match_id, error = result
+                if match_id:
+                    index[folder.name] = {"id": match_id, "title": final_name, "year": match_year}
+        print()
+
+    cache[cache_key] = index
+    save_scan_cache(cache)
+    return index
+
+
+def run_suggestions(args):
+    api_key = get_api_key()
+    get_tmdb_language()
+
+    share = resolve_share(None)
+    media_type = determine_media_type(share, getattr(args, "type", None))
+
+    count = args.suggestions if isinstance(args.suggestions, int) and args.suggestions > 0 else DEFAULT_SUGGESTIONS_COUNT
+
+    print()
+    print(f"Performing action: Suggestions ({'Movies' if media_type == 'movie' else 'TV Shows'})")
+    print()
+    print(f"Scanning: {share}")
+    print()
+
+    index = resolve_suggestions_library_index(share, media_type, api_key)
+    owned_ids = {int(v["id"]) for v in index.values() if v.get("id")}
+
+    if not owned_ids:
+        print("No matched titles found in this library yet. Run a rename scan first.")
+        return
+
+    print(f"Library has {len(owned_ids)} matched title(s) to base suggestions on.")
+
+    suggestions_cache = load_suggestions_cache()
+    already_suggested = {int(k) for k in suggestions_cache.get(media_type, {}).keys()}
+
+    seed_ids = list(owned_ids)
+    random.shuffle(seed_ids)
+    seed_ids = seed_ids[:SUGGESTION_SEED_SAMPLE_SIZE]
+
+    print(f"Checking TMDb recommendations from {len(seed_ids)} title(s)...")
+    print()
+
+    candidates = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=LOOKUP_WORKERS) as executor:
+        futures = {
+            executor.submit(tmdb_related, api_key, media_type, seed_id, "recommendations"): seed_id
+            for seed_id in seed_ids
+        }
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                results = future.result()
+            except Exception:
+                results = []
+            for r in results:
+                rid = r.get("id")
+                if not rid or rid in owned_ids or rid in already_suggested:
+                    continue
+                entry = candidates.setdefault(rid, {"data": r, "score": 0})
+                entry["score"] += 1
+
+    if not candidates:
+        print("No new suggestions found. Try again later, or clear your suggestions history with --clear-suggestions.")
+        return
+
+    ranked = sorted(
+        candidates.values(),
+        key=lambda c: (c["score"], c["data"].get("vote_average") or 0, c["data"].get("popularity") or 0),
+        reverse=True,
+    )
+    chosen = ranked[:count]
+
+    genre_map = MOVIE_GENRES if media_type == "movie" else TV_GENRES
+    newly_suggested = {}
+
+    for c in chosen:
+        r = c["data"]
+        rid = r.get("id")
+        title = r.get("title") or r.get("name") or "Unknown"
+        date = r.get("release_date") or r.get("first_air_date") or ""
+        year = date[:4] if date else "----"
+        genre_names = [genre_map.get(gid, str(gid)) for gid in r.get("genre_ids", [])]
+        score = round((r.get("vote_average") or 0) * 10)
+        overview = r.get("overview") or "No overview available."
+
+        print(f"Name: {title} ({year})")
+        print(f"Genre: {', '.join(genre_names) if genre_names else 'Unknown'}")
+        print(f"Score: {score}%")
+        print("Overview:")
+        print(overview)
+        print()
+
+        newly_suggested[str(rid)] = {
+            "title": title,
+            "year": year,
+            "suggested_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    suggestions_cache.setdefault(media_type, {}).update(newly_suggested)
+    save_suggestions_cache(suggestions_cache)
+
+    print(f"Shown {len(chosen)} suggestion(s). Recorded to history so they won't repeat next time.")
+    print("Clear history any time with --clear-suggestions.")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Scan SMB media shares, match against TMDb, and rename folders/files into Plex-friendly structure."
@@ -4444,6 +4712,19 @@ def build_parser():
              "or prompting."
     )
     parser.add_argument(
+        "-s", "--suggestions",
+        nargs="?", const=DEFAULT_SUGGESTIONS_COUNT, type=int, default=None, metavar="N",
+        help="Suggest new movies or TV shows based on what's already in your library, using TMDb "
+             f"recommendations. Defaults to {DEFAULT_SUGGESTIONS_COUNT} suggestions if N is not given. "
+             "Previously suggested titles are remembered and won't repeat; clear that history with "
+             "--clear-suggestions."
+    )
+    parser.add_argument(
+        "--clear-suggestions",
+        action="store_true",
+        help="Clear the suggestions history so previously suggested titles can come up again."
+    )
+    parser.add_argument(
         "--service",
         nargs="?", const="", default=None, metavar="start|stop|SECONDS|PATH",
         help="Run rename+cleanup automatically in the background on the configured share(s). "
@@ -4459,7 +4740,7 @@ def build_parser():
     return parser
 
 
-BUNDLABLE_FLAGS = {"y", "f", "t", "r", "v", "c", "e"}
+BUNDLABLE_FLAGS = {"y", "f", "t", "r", "v", "c", "e", "s"}
 PATH_TAKING_FLAGS = {"r", "c", "e"}
 
 
@@ -4817,6 +5098,7 @@ def main():
             args.yes or args.force or args.verbose or args.test is not None
             or args.rename or args.manual_rename or args.restore
             or args.backup or args.cleanup or args.episodes or args.type
+            or args.suggestions is not None or args.clear_suggestions
         )
         if other_args_used:
             print("--undo cannot be combined with any other argument.")
@@ -4828,6 +5110,10 @@ def main():
     VERBOSE = args.verbose
 
     log = RenameLog()
+
+    if args.clear_suggestions:
+        run_clear_suggestions()
+        return
 
     if args.restore:
         run_restore(args.restore)
@@ -4843,6 +5129,10 @@ def main():
 
     if args.episodes:
         run_episode_check(args)
+        return
+
+    if args.suggestions is not None:
+        run_suggestions(args)
         return
 
     if args.cleanup and args.rename:

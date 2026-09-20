@@ -11,11 +11,13 @@ This guide assumes you've never used Python or GitHub before. If you already kno
 ## What it does
 
 - Matches your existing folder names against TMDb and renames them to `Movie Name (Year)` / `Show Name (Year)` format
-- Renames video files to match, and organizes TV episodes into `S01`, `S02`, etc. season folders
+- Renames video files to match, and organizes TV episodes into `S01`, `S02`, etc. season folders. A "Specials" folder is recognized as season 0 and renamed to `S00` the same way, so cleanup won't mistake it for junk if you've added "Specials" to `delete.yaml`
 - Detects loose movie or TV episode files sitting directly in the share root (no folder of their own) and organizes them into a proper movie or show folder
 - Detects a duplicate show folder for a show you already have (e.g. a separately-downloaded "Show S02" folder) and merges its episodes into the existing show folder instead of creating a second one
 - Detects a duplicate movie folder (a re-download that resolves to a movie you already have) and moves it into a `DUPLICATES` folder at the top of the share, rather than overwriting or leaving it loose. Cleanup (`-c`) picks up `DUPLICATES` and moves it to trash the same as anything else
+- Detects a movie "bundle" folder (a box set, trilogy, or franchise rip with several different movies in one folder) and splits each movie out into its own correctly named folder, moving its matching subtitles along with it. This checks every movie folder with more than one video file, even if the folder's own name already matches a movie (e.g. a franchise folder named after just the first film)
 - Checks your organized TV shows against TMDb's episode list and reports any already-aired episodes you're missing (`-e`), without changing anything
+- Suggests new movies or TV shows based on what's already in your library, using TMDb recommendations (`-s` / `--suggestions [N]`, defaults to 5). Remembers what it's already suggested so it won't repeat itself; clear that history with `--clear-suggestions`
 - Understands anime-style absolute episode numbering (episodes numbered 1, 2, 3... straight through instead of per-season) when TMDb has that show's episode order data, converting them to the correct season/episode automatically
 - Finds subtitle files, figures out which one matches your primary language (by filename, and by reading the file's content/metadata if the filename doesn't say), and renames it to match the video. Defaults to English, but follows whatever language you've set for TMDb results (see [Non-English users](#non-english-users)).
 - Optionally cleans up junk files/folders (samples, `.nfo`, `.txt`, screenshots, unwanted-language subtitles) into a local trash folder. Nothing is deleted permanently, and every cleanup can be reversed.
@@ -144,6 +146,8 @@ python plex-library-tool.py -r "/path/to/your/Movies" -t
 | `-r`, `--rename [PATH]` | Scan and rename a share. Pass a path to skip the share-selection prompt. |
 | `-c`, `--cleanup [PATH]` | Move junk files/folders (per `delete.yaml`) to a local trash folder. |
 | `-e`, `--episodes [PATH]` | Check TV shows against TMDb's episode list and report any missing (already-aired) episodes. Read-only, makes no changes. |
+| `-s`, `--suggestions [N]` | Suggest N new movies or TV shows (default 5) based on what's already in your library, via TMDb recommendations. Read-only, makes no changes. |
+| `--clear-suggestions` | Clear the suggestions history so previously suggested titles can come up again. |
 | `-t`, `--test [N]` | Preview only. No changes are made. Optionally limit how many folders are shown. |
 | `-y`, `--yes` | Don't ask for confirmation before each rename. |
 | `-f`, `--force` | Force a full scan even if nothing looks like it changed since the last run. |
@@ -184,7 +188,7 @@ The service reuses your saved TMDb API key and language from `.env`, so run the 
 These live alongside the script and are all optional. The script works out of the box with sensible defaults. Every file is fully documented with comments and examples inside it.
 
 - **`names.yaml`**: customize the naming convention. Folder/file name format, season folder naming (`S01` vs `Season 01`), separators (spaces vs dots vs underscores), uppercase/lowercase, whether to include resolution tags like `1080p`, and the subtitle folder name (e.g. rename "Subs" to "Subtitles" or any word in your own language).
-- **`delete.yaml`**: what cleanup moves to trash. Folder name patterns (e.g. `sample`, `extras`), file name/extension patterns, and subtitle language rules (e.g. "only keep Spanish subtitles").
+- **`delete.yaml`**: what cleanup moves to trash. Folder name patterns (e.g. `sample`, `extras`), file name/extension patterns, subtitle language rules (e.g. "only keep Spanish subtitles"), and an optional `sample_videos: true` switch to catch loose sample video files sitting next to the real one (video files are otherwise never touched by cleanup).
 
 ---
 
