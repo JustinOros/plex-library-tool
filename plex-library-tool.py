@@ -2,6 +2,7 @@
 
 import argparse
 import concurrent.futures
+import csv
 import ctypes
 import datetime
 import difflib
@@ -40,6 +41,7 @@ DEFAULT_SERVICE_INTERVAL = 300
 SUGGESTIONS_CACHE_FILE = SCRIPT_DIR / "suggestions_cache.json"
 DEFAULT_SUGGESTIONS_COUNT = 5
 SUGGESTION_SEED_SAMPLE_SIZE = 25
+EXPORTS_DIR = SCRIPT_DIR / "exports"
 
 MOVIE_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
@@ -632,6 +634,25 @@ def parse_suggestions_arg(value):
         return value
 
 
+def normalize_export_format_arg(value):
+    v = value.strip().lower()
+    if v in ("txt", "text"):
+        return "txt"
+    if v in ("csv", "json"):
+        return v
+    raise argparse.ArgumentTypeError(f"Invalid export format: {value!r}. Use 'txt', 'csv', or 'json'.")
+
+
+FOLDER_TITLE_YEAR_PATTERN = re.compile(r'^(.*?)\s*\((19\d{2}|20\d{2})\)\s*$')
+
+
+def parse_title_and_year(folder_name):
+    m = FOLDER_TITLE_YEAR_PATTERN.match(folder_name)
+    if m:
+        return m.group(1).strip(), m.group(2)
+    return folder_name.strip(), None
+
+
 def determine_media_type(share, override=None):
     if override:
         label = "Movies" if override == "movie" else "TV Shows"
@@ -1108,6 +1129,44 @@ def rmtree_retrying(path, attempts=5, delay=1.0):
             if i < attempts - 1:
                 time.sleep(delay)
     return False, str(last_err)
+
+
+def remove_duplicates_folder_when_empty(item, subdir_attempts=20, subdir_delay=2.0, top_attempts=15, top_delay=2.0):
+    purge_stray_metadata(item)
+
+    for attempt in range(subdir_attempts):
+        try:
+            subdirs = [e for e in item.iterdir() if e.is_dir()]
+        except OSError:
+            subdirs = []
+        if not subdirs:
+            break
+        for sub in subdirs:
+            try:
+                if not any(sub.iterdir()):
+                    sub.rmdir()
+            except OSError:
+                pass
+        if attempt < subdir_attempts - 1:
+            time.sleep(subdir_delay)
+
+    last_err = None
+    for attempt in range(top_attempts):
+        try:
+            is_empty = not any(item.iterdir())
+        except OSError:
+            is_empty = False
+        if is_empty:
+            try:
+                item.rmdir()
+                return True, None
+            except OSError as e:
+                last_err = str(e)
+        else:
+            last_err = "not empty yet"
+        if attempt < top_attempts - 1:
+            time.sleep(top_delay)
+    return False, last_err
 
 
 def safe_move(src, dest):
@@ -2007,11 +2066,21 @@ def duplicate_file_staging_path(share, context_name, item):
     return unique_destination(dest_dir / item.name)
 
 
+def cleanup_empty_staging_dir(share, context_name):
+    dest_dir = Path(share) / DUPLICATES_FOLDER_NAME / context_name
+    try:
+        if dest_dir.is_dir() and not any(dest_dir.iterdir()):
+            dest_dir.rmdir()
+    except OSError:
+        pass
+
+
 def stage_duplicate_episode(share, context_name, item, log):
     staged_dest = duplicate_file_staging_path(share, context_name, item)
     ok, err = safe_move(item, staged_dest)
     if not ok:
         print(f"Skipping (could not move to {DUPLICATES_FOLDER_NAME}/: {err}): {item.name}")
+        cleanup_empty_staging_dir(share, context_name)
         return False
     log.record(item, staged_dest)
     print(f"Moved duplicate episode to {DUPLICATES_FOLDER_NAME}/{context_name}/: {item.name}")
@@ -2976,6 +3045,7 @@ def handle_movie_bundle_folder(share, folder, api_key, log, test_mode, args, nee
                 files_moved += 1
             else:
                 print(f"Skipping (could not move to {DUPLICATES_FOLDER_NAME}/: {err}): {video.name}")
+                cleanup_empty_staging_dir(share, target_folder_name)
                 files_skipped += 1
             continue
 
@@ -3407,6 +3477,9 @@ def remove_empty_folders(share, confirm_all, dry_run=False):
             print(f"Removed empty folder: {root_path}")
             removed_paths.add(root_path)
             removed += 1
+        except FileNotFoundError:
+            vprint(f"  Already gone: {root_path}")
+            removed_paths.add(root_path)
         except OSError as e:
             vprint(f"  Could not remove {root_path}: {e}")
     return removed, skipped
@@ -3532,19 +3605,18 @@ def run_cleanup(args, log):
                 continue
 
         if kind == "folder" and item.name == DUPLICATES_FOLDER_NAME:
-            purge_stray_metadata(item)
-            purge_empty_subdirs(item)
-            try:
-                is_empty = not any(item.iterdir())
-            except OSError:
-                is_empty = False
-            if is_empty:
-                ok, err = rmdir_retrying(item)
-                if ok:
-                    print(f"Removed empty {DUPLICATES_FOLDER_NAME} folder: {item}")
-                    moved_folders += 1
-                    continue
-                vprint(f"  Could not remove empty {DUPLICATES_FOLDER_NAME} folder yet ({err}), falling back to trash move: {item}")
+            removed, err = remove_duplicates_folder_when_empty(item)
+            if removed:
+                print(f"Removed empty {DUPLICATES_FOLDER_NAME} folder: {item}")
+                moved_folders += 1
+            else:
+                print(
+                    f"Could not fully remove {DUPLICATES_FOLDER_NAME} folder yet ({err}). "
+                    "This is usually a stale SMB directory cache and should clear up on its own; "
+                    "try cleanup again shortly."
+                )
+                skipped_folders += 1
+            continue
 
         dest = trash_path_for(share, item, timestamp)
         if dest.exists():
@@ -4762,6 +4834,70 @@ def run_suggestions(args):
     print("Clear history any time with --clear-suggestions.")
 
 
+def write_export_file(export_path, export_format, entries):
+    if export_format == "txt":
+        export_path.write_text("\n".join(f"{title} ({year})" for title, year in entries) + "\n")
+    elif export_format == "csv":
+        with export_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            for title, year in entries:
+                writer.writerow([f"{title} ({year})"])
+    elif export_format == "json":
+        data = [
+            {"Name": title, "Year": int(year) if year.isdigit() else year}
+            for title, year in entries
+        ]
+        export_path.write_text(json.dumps(data, indent=2))
+
+
+def run_export(args):
+    export_format = args.export
+
+    share = resolve_share(None)
+    media_type = determine_media_type(share, getattr(args, "type", None))
+
+    print()
+    print(f"Performing action: Export ({'Movies' if media_type == 'movie' else 'TV Shows'})")
+    print()
+    print(f"Scanning: {share}")
+    print()
+
+    share_path = Path(share)
+    folders = sorted(p for p in share_path.iterdir() if is_library_content_folder(p))
+
+    entries = []
+    skipped = []
+    for folder in folders:
+        title, year = parse_title_and_year(folder.name)
+        if year is None:
+            skipped.append(folder.name)
+            continue
+        entries.append((title, year))
+
+    if not entries:
+        print("No organized titles found to export. Run a rename scan first.")
+        return
+
+    EXPORTS_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    label = re.sub(r'[^A-Za-z0-9]+', '_', Path(share).name).strip('_')
+    export_path = EXPORTS_DIR / f"{timestamp}-{label}-export.{export_format}"
+    counter = 1
+    while export_path.exists():
+        export_path = EXPORTS_DIR / f"{timestamp}-{label}-export-{counter}.{export_format}"
+        counter += 1
+
+    write_export_file(export_path, export_format, entries)
+
+    print(f"Exported {len(entries)} title(s) to: {export_path}")
+
+    if skipped:
+        print()
+        print(f"Skipped {len(skipped)} folder(s) without a recognizable '(Year)' suffix (not yet organized):")
+        for name in skipped:
+            print(f"  {name}")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Scan SMB media shares, match against TMDb, and rename folders/files into Plex-friendly structure."
@@ -4841,6 +4977,13 @@ def build_parser():
         "--clear-suggestions",
         action="store_true",
         help="Clear the suggestions history so previously suggested titles can come up again."
+    )
+    parser.add_argument(
+        "--export",
+        type=normalize_export_format_arg, default=None, metavar="txt|csv|json",
+        help="Export a list of your movies or TV shows (name and year only, no episodes) to a file "
+             "under exports/. Choose 'txt' (one per line), 'csv' (one per row), or 'json' "
+             "([{Name, Year}]). Read-only, makes no changes to your library."
     )
     parser.add_argument(
         "--service",
@@ -5216,7 +5359,7 @@ def main():
             args.yes or args.force or args.verbose or args.test is not None
             or args.rename or args.manual_rename or args.restore
             or args.backup or args.cleanup or args.episodes or args.type
-            or args.suggestions is not None or args.clear_suggestions
+            or args.suggestions is not None or args.clear_suggestions or args.export
         )
         if other_args_used:
             print("--undo cannot be combined with any other argument.")
@@ -5251,6 +5394,10 @@ def main():
 
     if args.suggestions is not None:
         run_suggestions(args)
+        return
+
+    if args.export:
+        run_export(args)
         return
 
     if args.cleanup and args.rename:
