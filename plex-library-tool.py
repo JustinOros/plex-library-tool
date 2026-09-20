@@ -34,7 +34,8 @@ TMDB_BASE = "https://api.themoviedb.org/3"
 DELETE_FILE = SCRIPT_DIR / "delete.yaml"
 NAMES_FILE = SCRIPT_DIR / "names.yaml"
 CLEANUP_TRASH_DIR = SCRIPT_DIR / ".trash"
-DUPLICATES_FOLDER_NAME = "DUPLICATES"
+DUPLICATES_FOLDER_NAME = ".DUPLICATES"
+LEGACY_DUPLICATES_FOLDER_NAME = "DUPLICATES"
 SERVICE_CONFIG_FILE = SCRIPT_DIR / "service.json"
 SERVICE_LOG_FILE = LOG_DIR / "service.log"
 DEFAULT_SERVICE_INTERVAL = 300
@@ -2189,6 +2190,41 @@ def unique_destination(dest):
         counter += 1
 
 
+def migrate_legacy_duplicates_folder(share):
+    legacy = Path(share) / LEGACY_DUPLICATES_FOLDER_NAME
+    if not legacy.is_dir():
+        return
+
+    current = Path(share) / DUPLICATES_FOLDER_NAME
+
+    if not current.exists():
+        try:
+            legacy.rename(current)
+            print(
+                f"Renamed {LEGACY_DUPLICATES_FOLDER_NAME}/ to {DUPLICATES_FOLDER_NAME}/ "
+                "(dot-prefixed so Plex's scanner skips it, avoiding lock conflicts)"
+            )
+        except OSError as e:
+            vprint(f"  Could not migrate legacy {LEGACY_DUPLICATES_FOLDER_NAME}/ folder: {e}")
+        return
+
+    print(f"Merging legacy {LEGACY_DUPLICATES_FOLDER_NAME}/ into {DUPLICATES_FOLDER_NAME}/")
+    for entry in list(legacy.iterdir()):
+        dest = current / entry.name
+        if dest.exists():
+            dest = unique_destination(dest)
+        try:
+            entry.rename(dest)
+        except OSError as e:
+            vprint(f"  Could not migrate {entry}: {e}")
+
+    try:
+        if not any(legacy.iterdir()):
+            legacy.rmdir()
+    except OSError:
+        pass
+
+
 def is_already_disambiguated(item, dest):
     if item.parent != dest.parent or item.suffix.lower() != dest.suffix.lower():
         return False
@@ -2303,7 +2339,9 @@ def preview_subtitle_folder(folder):
 
 
 def is_library_content_folder(p):
-    return p.is_dir() and not p.name.startswith(".") and p.name.upper() != DUPLICATES_FOLDER_NAME
+    if not p.is_dir() or p.name.startswith("."):
+        return False
+    return p.name.upper() != LEGACY_DUPLICATES_FOLDER_NAME.upper()
 
 
 def list_subfolders(folder):
@@ -3490,6 +3528,8 @@ def run_cleanup(args, log):
     share = resolve_share(path_arg)
     log.set_label(f"{Path(share).name}-cleanup")
 
+    migrate_legacy_duplicates_folder(share)
+
     print()
     print(f"Performing action: Cleanup{' (Test Mode)' if args.test is not None else ''}")
 
@@ -4022,6 +4062,8 @@ def run_scan(args, log):
     path_arg = args.rename if isinstance(args.rename, str) else None
     share = resolve_share(path_arg)
     log.set_label(Path(share).name)
+
+    migrate_legacy_duplicates_folder(share)
 
     cache = load_scan_cache()
     share_key = str(Path(share).resolve())

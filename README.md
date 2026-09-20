@@ -14,7 +14,7 @@ This guide assumes you've never used Python or GitHub before. If you already kno
 - Renames video files to match, and organizes TV episodes into `S01`, `S02`, etc. season folders. A "Specials" folder is recognized as season 0 and renamed to `S00` the same way, so cleanup won't mistake it for junk if you've added "Specials" to `delete.yaml`
 - Detects loose movie or TV episode files sitting directly in the share root (no folder of their own) and organizes them into a proper movie or show folder
 - Detects a duplicate show folder for a show you already have (e.g. a separately-downloaded "Show S02" folder) and merges its episodes into the existing show folder instead of creating a second one
-- Detects a duplicate movie folder (a re-download that resolves to a movie you already have) and moves it into a `DUPLICATES` folder at the top of the share, rather than overwriting or leaving it loose. Cleanup (`-c`) picks up `DUPLICATES` and moves it to trash the same as anything else
+- Detects a duplicate movie folder (a re-download that resolves to a movie you already have) and moves it into a `.DUPLICATES` folder at the top of the share, rather than overwriting or leaving it loose. It's dot-prefixed on purpose so Plex's scanner treats it as hidden and leaves it alone. Cleanup (`-c`) picks up `.DUPLICATES` and moves it to trash the same as anything else. If you have an older, non-dot `DUPLICATES` folder from a previous version, it's migrated automatically the next time you run a scan or cleanup
 - Detects a movie "bundle" folder (a box set, trilogy, or franchise rip with several different movies in one folder) and splits each movie out into its own correctly named folder, moving its matching subtitles along with it. This checks every movie folder with more than one video file, even if the folder's own name already matches a movie (e.g. a franchise folder named after just the first film)
 - Checks your organized TV shows against TMDb's episode list and reports any already-aired episodes you're missing (`-e`), without changing anything
 - Suggests new movies or TV shows based on what's already in your library, using TMDb recommendations (`-s` / `--suggestions [N]`, defaults to 5). Pass a genre list instead of a number (e.g. `--suggestions action,sci-fi`) to suggest purely from that genre instead of basing it on your library. Remembers what it's already suggested so it won't repeat itself; clear that history with `--clear-suggestions`
@@ -211,7 +211,7 @@ Use any TMDb-supported language code (ISO 639-1, optionally with a region, e.g. 
 - **Nothing is renamed without asking first**, unless you pass `-y`.
 - **Every rename is logged** to a `logs/` folder created next to the script.
 - **Cleanup never permanently deletes anything.** Matched files/folders are moved to a local `.trash/` folder, not deleted, and you're prompted per item unless `-y` is used.
-- **Rename never deletes anything either.** A duplicate movie folder is moved into a `DUPLICATES` folder on the share, not removed. It only leaves the share once cleanup (`-c`) moves it to trash, same as everything else.
+- **Rename never deletes anything either.** A duplicate movie folder is moved into a `.DUPLICATES` folder on the share, not removed. It only leaves the share once cleanup (`-c`) moves it to trash, same as everything else.
 - **Undo anytime** with `-u` (most recent run) or `--restore <logfile>` (any past run).
 - **Your TMDb API key is never uploaded anywhere.** It's stored locally in a `.env` file, which is excluded from Git via `.gitignore`.
 
