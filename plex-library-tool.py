@@ -5437,7 +5437,9 @@ def run_interactive_menu():
     elif action == "3":
         args.rename = share
         args.cleanup = share
+        original_yes = args.yes
         run_scan(args, log)
+        args.yes = original_yes
         print()
         run_cleanup(args, log)
     elif action == "4":
@@ -5518,7 +5520,9 @@ def main():
         share = resolve_share(path_arg)
         args.rename = share
         args.cleanup = share
+        original_yes = args.yes
         run_scan(args, log)
+        args.yes = original_yes
         print()
         run_cleanup(args, log)
         return
