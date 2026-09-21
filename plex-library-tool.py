@@ -1199,6 +1199,19 @@ def confirm(prompt):
     return answer in ("y", "yes")
 
 
+def confirm_or_all(prompt, args):
+    while True:
+        answer = input(f"{prompt} [y/N/a] ").strip().lower()
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("a", "all"):
+            args.yes = True
+            return True
+        if answer in ("n", "no", ""):
+            return False
+        print("Please enter y (yes), n (no), or a (all).")
+
+
 def confirm_delete_choice(prompt):
     while True:
         answer = input(f"{prompt} [y/N/a] ").strip().lower()
@@ -3068,7 +3081,7 @@ def handle_movie_bundle_folder(share, folder, api_key, log, test_mode, args, nee
             files_skipped += 1
             continue
 
-        if not args.yes and not confirm(f"Split '{video.name}' out of bundle '{folder.name}' into '{target_folder_name}'?"):
+        if not args.yes and not confirm_or_all(f"Split '{video.name}' out of bundle '{folder.name}' into '{target_folder_name}'?", args):
             print(f"Skipped: {video.name}")
             files_skipped += 1
             continue
@@ -3784,7 +3797,7 @@ def process_loose_movie_files(share, api_key, log, test_mode, test_limit, args, 
             files_renamed += 1
             continue
 
-        if not args.yes and not confirm(f"Create '{folder_name}' and move '{item.name}' into it?"):
+        if not args.yes and not confirm_or_all(f"Create '{folder_name}' and move '{item.name}' into it?", args):
             print(f"Skipped: {item.name}")
             folders_skipped += 1
             continue
@@ -3878,7 +3891,7 @@ def process_loose_tv_files(share, api_key, log, test_mode, test_limit, args, nee
             files_renamed += 1
             continue
 
-        if not args.yes and not confirm(f"Move '{item.name}' into show folder '{folder_name}'?"):
+        if not args.yes and not confirm_or_all(f"Move '{item.name}' into show folder '{folder_name}'?", args):
             print(f"Skipped: {item.name}")
             files_skipped += 1
             continue
@@ -3985,7 +3998,7 @@ def process_loose_subtitle_files(share, media_type, log, test_mode, args, needs_
             renamed += 1
             continue
 
-        if not args.yes and not confirm(f"Move '{item.name}' to match '{folder.name}/{video.name}'?"):
+        if not args.yes and not confirm_or_all(f"Move '{item.name}' to match '{folder.name}/{video.name}'?", args):
             print(f"Skipped: {item.name}")
             skipped += 1
             continue
@@ -4207,7 +4220,7 @@ def run_scan(args, log):
         needs_rename = new_folder != folder
 
         if needs_rename and media_type == "tv" and new_folder.is_dir() and not same_existing_path(new_folder, folder):
-            if not args.yes and not confirm(f"Merge '{raw_name}' into existing show folder '{folder_name}'?"):
+            if not args.yes and not confirm_or_all(f"Merge '{raw_name}' into existing show folder '{folder_name}'?", args):
                 print(f"Skipped: {raw_name}")
                 folders_skipped += 1
                 continue
@@ -4219,14 +4232,14 @@ def run_scan(args, log):
             continue
 
         if needs_rename:
-            if not args.yes and not confirm(f"Rename '{raw_name}' -> '{folder_name}'?"):
+            if not args.yes and not confirm_or_all(f"Rename '{raw_name}' -> '{folder_name}'?", args):
                 print(f"Skipped: {raw_name}")
                 folders_skipped += 1
                 continue
 
             if new_folder.exists() and not same_existing_path(new_folder, folder):
                 if list_video_files(new_folder):
-                    if args.yes or confirm(f"'{folder_name}' already exists. Move duplicate folder '{raw_name}' to {DUPLICATES_FOLDER_NAME}/?"):
+                    if args.yes or confirm_or_all(f"'{folder_name}' already exists. Move duplicate folder '{raw_name}' to {DUPLICATES_FOLDER_NAME}/?", args):
                         staged_dest = duplicate_folder_staging_path(share, folder)
                         ok, err = safe_move(folder, staged_dest)
                         if ok:
