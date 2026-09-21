@@ -116,6 +116,8 @@ python plex-library-tool.py -r
 
 The first time you run it, it'll ask you to paste in the TMDb API key from step 3, and offer to save it to a local `.env` file so you're never asked again. That file stays on your computer and is never uploaded anywhere.
 
+Prefer not to remember flags? Just run it with no arguments (`python3 plex-library-tool.py`) and it'll walk you through picking a share and then an action (Rename, Clean, Rename and Clean, Episodes, or Suggestions) interactively.
+
 ### 5. Point it at your media
 
 After the API key step, the script will either:

@@ -4782,11 +4782,12 @@ def gather_genre_candidates(api_key, media_type, genre_ids, owned_ids, already_s
     return candidates
 
 
-def run_suggestions(args):
+def run_suggestions(args, share=None):
     api_key = get_api_key()
     get_tmdb_language()
 
-    share = resolve_share(None)
+    if share is None:
+        share = resolve_share(None)
     media_type = determine_media_type(share, getattr(args, "type", None))
     genre_map = MOVIE_GENRES if media_type == "movie" else TV_GENRES
 
@@ -5382,9 +5383,61 @@ def run_service_worker():
         time.sleep(interval)
 
 
+INTERACTIVE_MENU_ACTIONS = {
+    "1": "Rename",
+    "2": "Clean",
+    "3": "Rename and Clean",
+    "4": "Episodes",
+    "5": "Suggestions",
+}
+
+
+def select_interactive_action():
+    print()
+    print("Select an action to perform:")
+    for key in sorted(INTERACTIVE_MENU_ACTIONS, key=int):
+        print(f"  {key}) {INTERACTIVE_MENU_ACTIONS[key]}")
+    while True:
+        sel = input(f"Select an action [1-{len(INTERACTIVE_MENU_ACTIONS)}]: ").strip()
+        if sel in INTERACTIVE_MENU_ACTIONS:
+            return sel
+        print("Invalid selection.")
+
+
+def run_interactive_menu():
+    share = resolve_share(None)
+    action = select_interactive_action()
+
+    args = build_parser().parse_args([])
+
+    global VERBOSE
+    VERBOSE = args.verbose
+
+    log = RenameLog()
+
+    if action == "1":
+        args.rename = share
+        run_scan(args, log)
+    elif action == "2":
+        args.cleanup = share
+        run_cleanup(args, log)
+    elif action == "3":
+        args.rename = share
+        args.cleanup = share
+        run_scan(args, log)
+        print()
+        run_cleanup(args, log)
+    elif action == "4":
+        args.episodes = share
+        run_episode_check(args)
+    elif action == "5":
+        args.suggestions = DEFAULT_SUGGESTIONS_COUNT
+        run_suggestions(args, share=share)
+
+
 def main():
     if len(sys.argv) == 1:
-        build_parser().print_help()
+        run_interactive_menu()
         return
 
     args = parse_args()
