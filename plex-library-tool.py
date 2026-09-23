@@ -1133,44 +1133,6 @@ def rmtree_retrying(path, attempts=5, delay=1.0):
     return False, str(last_err)
 
 
-def remove_duplicates_folder_when_empty(item, subdir_attempts=20, subdir_delay=2.0, top_attempts=15, top_delay=2.0):
-    purge_stray_metadata(item)
-
-    for attempt in range(subdir_attempts):
-        try:
-            subdirs = [e for e in item.iterdir() if e.is_dir()]
-        except OSError:
-            subdirs = []
-        if not subdirs:
-            break
-        for sub in subdirs:
-            try:
-                if not any(sub.iterdir()):
-                    sub.rmdir()
-            except OSError:
-                pass
-        if attempt < subdir_attempts - 1:
-            time.sleep(subdir_delay)
-
-    last_err = None
-    for attempt in range(top_attempts):
-        try:
-            is_empty = not any(item.iterdir())
-        except OSError:
-            is_empty = False
-        if is_empty:
-            try:
-                item.rmdir()
-                return True, None
-            except OSError as e:
-                last_err = str(e)
-        else:
-            last_err = "not empty yet"
-        if attempt < top_attempts - 1:
-            time.sleep(top_delay)
-    return False, last_err
-
-
 def safe_move(src, dest):
     try:
         shutil.move(str(src), str(dest))
@@ -3436,9 +3398,6 @@ def find_cleanup_targets(share, delete_folder_names, delete_file_patterns, keep_
     share_root = Path(share)
 
     duplicates_dir = share_root / DUPLICATES_FOLDER_NAME
-    if duplicates_dir.is_dir():
-        vprint(f"  Match (duplicates staging folder): {duplicates_dir}")
-        targets.append(("folder", duplicates_dir))
 
     def walk(folder):
         vprint(f"Scanning folder: {folder}")
@@ -3493,9 +3452,13 @@ def remove_empty_folders(share, confirm_all, dry_run=False):
     skipped = 0
     removed_paths = set()
     share_path = Path(share).resolve()
+    duplicates_path = (share_path / DUPLICATES_FOLDER_NAME).resolve()
     for root, dirs, files in os.walk(share, topdown=False):
         root_path = Path(root)
         if root_path.resolve() == share_path:
+            continue
+        resolved_root = root_path.resolve()
+        if resolved_root == duplicates_path or duplicates_path in resolved_root.parents:
             continue
         try:
             remaining = [
@@ -3556,11 +3519,9 @@ def run_cleanup(args, log):
     vprint(f"Loaded subtitle rules: keep={keep_languages or 'none'}, delete={delete_languages or 'none'}")
     vprint(f"Sample video cleanup enabled: {sample_videos_enabled}")
 
-    has_duplicates_folder = (Path(share) / DUPLICATES_FOLDER_NAME).is_dir()
-
     if (
         not delete_folder_names and not delete_file_patterns and not keep_languages
-        and not delete_languages and not has_duplicates_folder and not sample_videos_enabled
+        and not delete_languages and not sample_videos_enabled
     ):
         print("No cleanup rules configured.")
         print(f"Edit {DELETE_FILE.name} to enable cleanup.")
@@ -3657,20 +3618,6 @@ def run_cleanup(args, log):
                 else:
                     skipped_files += 1
                 continue
-
-        if kind == "folder" and item.name == DUPLICATES_FOLDER_NAME:
-            removed, err = remove_duplicates_folder_when_empty(item)
-            if removed:
-                print(f"Removed empty {DUPLICATES_FOLDER_NAME} folder: {item}")
-                moved_folders += 1
-            else:
-                print(
-                    f"Could not fully remove {DUPLICATES_FOLDER_NAME} folder yet ({err}). "
-                    "This is usually a stale SMB directory cache and should clear up on its own; "
-                    "try cleanup again shortly."
-                )
-                skipped_folders += 1
-            continue
 
         dest = trash_path_for(share, item, timestamp)
         if dest.exists():
