@@ -7,3 +7,5 @@ service.json
 __pycache__/
 *.pyc
 .DS_Store
+exports/
+suggestions_cache.json
