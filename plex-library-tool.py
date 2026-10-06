@@ -564,14 +564,24 @@ def find_smb_mounts():
 
 
 def select_mount(mounts):
-    print("Available SMB shares:")
-    for i, m in enumerate(mounts, 1):
-        print(f"  {i}) {m}")
     while True:
-        sel = input(f"Select a share to scan [1-{len(mounts)}]: ").strip()
-        if sel.isdigit() and 1 <= int(sel) <= len(mounts):
-            return mounts[int(sel) - 1]
-        print("Invalid selection.")
+        print("Available SMB shares:")
+        print("  0) Scan again")
+        for i, m in enumerate(mounts, 1):
+            print(f"  {i}) {m}")
+        while True:
+            sel = input(f"Select a share to scan [0-{len(mounts)}]: ").strip()
+            if sel == "0":
+                print()
+                print("Scanning for shares...")
+                mounts = find_smb_mounts()
+                if not mounts:
+                    print("No SMB shares found.")
+                print()
+                break
+            if sel.isdigit() and 1 <= int(sel) <= len(mounts):
+                return mounts[int(sel) - 1]
+            print("Invalid selection.")
 
 
 def resolve_share(path_arg=None):
