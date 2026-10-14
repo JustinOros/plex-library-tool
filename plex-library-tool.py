@@ -43,6 +43,7 @@ SUGGESTIONS_CACHE_FILE = SCRIPT_DIR / "suggestions_cache.json"
 DEFAULT_SUGGESTIONS_COUNT = 5
 SUGGESTION_SEED_SAMPLE_SIZE = 25
 EXPORTS_DIR = SCRIPT_DIR / "exports"
+MISSING_FILE = SCRIPT_DIR / "missing.json"
 
 MOVIE_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
@@ -4305,11 +4306,13 @@ def check_show_episodes(api_key, show_folder):
     raw_name = show_folder.name
     final_name, match_year, tmdb_id, error = lookup_folder(api_key, "tv", raw_name)
     if error or not tmdb_id:
-        return None, error or f"Could not resolve on TMDb: {raw_name}"
+        return None, error or f"Could not resolve on TMDb: {raw_name}", None
 
     details, err = tmdb_tv_details(api_key, tmdb_id)
     if err:
-        return None, f"Could not fetch show details: {raw_name} ({err})"
+        return None, f"Could not fetch show details: {raw_name} ({err})", None
+
+    info = {"name": final_name, "year": match_year, "tmdb_id": tmdb_id}
 
     local = collect_local_episodes(show_folder)
     today = datetime.date.today().isoformat()
@@ -4339,7 +4342,7 @@ def check_show_episodes(api_key, show_folder):
         if season_missing:
             missing[season_number] = sorted(season_missing)
 
-    return missing, None
+    return missing, None, info
 
 
 def flatten_self_nested_folder(folder, log):
@@ -4440,10 +4443,11 @@ def run_episode_check(args):
     incomplete = 0
     missing_episode_count = 0
     lookup_errors = 0
+    missing_entries = []
 
     for index, show_folder in enumerate(shows, start=1):
         vprint(f"[{index}/{len(shows)}] Checking: {show_folder.name}")
-        missing, error = check_show_episodes(api_key, show_folder)
+        missing, error, info = check_show_episodes(api_key, show_folder)
 
         if error:
             print(f"{show_folder.name}: {error}")
@@ -4461,12 +4465,36 @@ def run_episode_check(args):
             missing_episode_count += len(episodes)
             ep_list = ", ".join(f"E{e:02d}" for e in episodes)
             print(f"  S{season_number:02d}: missing {ep_list}")
+            for e in episodes:
+                missing_entries.append({
+                    "name": info["name"],
+                    "year": int(info["year"]) if str(info["year"]).isdigit() else info["year"],
+                    "tmdb_id": info["tmdb_id"],
+                    "season": season_number,
+                    "episode": e,
+                    "label": f"{info['name']} S{season_number:02d}E{e:02d}",
+                })
 
     print()
     print("=== Summary ===")
     print(f"Shows checked: {checked}, incomplete: {incomplete}, missing episodes: {missing_episode_count}")
     if lookup_errors:
         print(f"Shows skipped due to lookup errors: {lookup_errors}")
+
+    if getattr(args, "output", False):
+        write_missing_json(share, missing_entries)
+
+
+def write_missing_json(share, tv_entries):
+    payload = {
+        "generated": datetime.datetime.now().isoformat(timespec="seconds"),
+        "source": str(share),
+        "movies": [],
+        "tv_shows": tv_entries,
+    }
+    MISSING_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+    print()
+    print(f"Wrote {len(tv_entries)} missing episode(s) to: {MISSING_FILE}")
 
 
 def run_backup(args):
@@ -4972,6 +5000,12 @@ def build_parser():
              "Read-only, makes no changes. Optionally pass a path to skip the share-selection prompt."
     )
     parser.add_argument(
+        "-o", "--output",
+        action="store_true",
+        help="With --episodes, also write the missing episodes to missing.json next to the script "
+             "(overwritten each run) for use by other tools."
+    )
+    parser.add_argument(
         "-T", "--type",
         type=normalize_media_type_arg, default=None, metavar="movies|tv",
         help="Manually specify the library type (movies or tv) instead of auto-detecting from the share name "
@@ -5015,7 +5049,7 @@ def build_parser():
     return parser
 
 
-BUNDLABLE_FLAGS = {"y", "f", "t", "r", "v", "c", "e", "s"}
+BUNDLABLE_FLAGS = {"y", "f", "t", "r", "v", "c", "e", "s", "o"}
 PATH_TAKING_FLAGS = {"r", "c", "e"}
 
 
@@ -5401,6 +5435,7 @@ def run_interactive_menu():
         run_cleanup(args, log)
     elif action == "4":
         args.episodes = share
+        args.output = confirm(f"Also write missing episodes to {MISSING_FILE.name}?")
         run_episode_check(args)
     elif action == "5":
         args.suggestions = DEFAULT_SUGGESTIONS_COUNT
@@ -5427,7 +5462,7 @@ def main():
             args.yes or args.force or args.verbose or args.test is not None
             or args.rename or args.manual_rename or args.restore
             or args.backup or args.cleanup or args.episodes or args.type
-            or args.suggestions is not None or args.clear_suggestions or args.export
+            or args.suggestions is not None or args.clear_suggestions or args.export or args.output
         )
         if other_args_used:
             print("--undo cannot be combined with any other argument.")
