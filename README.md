@@ -149,7 +149,7 @@ python plex-library-tool.py -r "/path/to/your/Movies" -t
 | `-r`, `--rename [PATH]` | Scan and rename a share. Pass a path to skip the share-selection prompt. |
 | `-c`, `--cleanup [PATH]` | Move junk files/folders (per `delete.yaml`) to a local trash folder. |
 | `-e`, `--episodes [PATH]` | Check TV shows against TMDb's episode list and report any missing (already-aired) episodes. Read-only, makes no changes. |
-| `-o`, `--output` | With `--episodes`, also write the missing episodes to `missing.json` next to the script (overwritten each run). Each entry has `name`, `year`, `tmdb_id`, `season`, `episode`, and a ready-made `label` like `Show Name S01E02`. A `movies` list is included for future use and is currently empty. |
+| `-o`, `--output` | With `--episodes`, also write the missing episodes to `missing.json` next to the script (overwritten each run). Each entry has `name`, `year`, `tmdb_id`, `season`, `episode`, and a ready-made `label` like `Show Name S01E02`. |
 | `-s`, `--suggestions [N\|genre1,genre2]` | Suggest N new movies or TV shows (default 5) based on what's already in your library, via TMDb recommendations. Pass a genre list instead of a number to suggest purely from that genre. Read-only, makes no changes. |
 | `--clear-suggestions` | Clear the suggestions history so previously suggested titles can come up again. |
 | `--export txt\|csv\|json` | Export a list of your movie or TV show titles and years to `exports/`. Read-only, makes no changes. |

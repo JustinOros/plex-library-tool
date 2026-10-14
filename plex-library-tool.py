@@ -4489,7 +4489,6 @@ def write_missing_json(share, tv_entries):
     payload = {
         "generated": datetime.datetime.now().isoformat(timespec="seconds"),
         "source": str(share),
-        "movies": [],
         "tv_shows": tv_entries,
     }
     MISSING_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -5435,7 +5434,8 @@ def run_interactive_menu():
         run_cleanup(args, log)
     elif action == "4":
         args.episodes = share
-        args.output = confirm(f"Also write missing episodes to {MISSING_FILE.name}?")
+        if infer_media_type(share) != "movie":
+            args.output = confirm(f"Also write missing episodes to {MISSING_FILE.name}?")
         run_episode_check(args)
     elif action == "5":
         args.suggestions = DEFAULT_SUGGESTIONS_COUNT
